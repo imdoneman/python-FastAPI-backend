@@ -1,6 +1,6 @@
 # --- STAGE 1: Builder & Tester ---
 # We use 'slim' to get the necessary build tools while keeping it relatively small.
-FROM python:3.12-slim AS builder
+FROM python:3.12-alpine AS builder
 
 # Prevent Python from writing .pyc files and buffering stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1
