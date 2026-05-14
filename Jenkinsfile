@@ -4,8 +4,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'main', 
-                    credentialsId: 'your-github-credentials-id', 
+                git branch: 'main',
                     url: 'https://github.com/imdoneman/python-FastAPI-backend.git'
             }
         }
