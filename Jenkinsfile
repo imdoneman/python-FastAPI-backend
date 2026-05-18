@@ -1,6 +1,11 @@
 pipeline {
     agent any
-    
+
+    environment {
+        // Define standard workspace variables if needed
+        APP_NAME = "tea-house-api"
+    }
+
     stages {
         stage('Checkout') {
             steps {
@@ -8,22 +13,45 @@ pipeline {
                     url: 'https://github.com/imdoneman/python-FastAPI-backend.git'
             }
         }
-        
-        stage('Build & Test') {
+
+        stage('Build, Test & Deploy Stack') {
             steps {
-                echo 'Starting Multi-Stage Docker Build...'
-                // This runs your Alpine builder, runs pytest, and creates the runner image
-                sh 'docker build -t tea-house-api:latest .'
+                echo 'Starting Container Compilation and Running Embedded Pytest Suite...'
+                
+                // Trigger the multi-stage build. 
+                // Jenkins will fail right here if any of your pytests fail!
+                sh "docker compose down"
+                sh "docker compose up -d --build"
+                
+                echo 'Stack successfully verified and running in detached mode!'
             }
         }
-        
-        stage('Deploy Local') {
+
+        stage('Verify Runtime Sanity') {
             steps {
-                echo 'Deploying to Test Environment...'
-                // Remove old container if it exists and start the new one
-                sh 'docker rm -f tea-house-container || true'
-                sh 'docker run -d -p 8000:8000 --name tea-house-container tea-house-api:latest'
+                echo 'Executing endpoint verification checks...'
+                script {
+                    // Give the application a few seconds to boot up completely
+                    sh "sleep 5"
+                    
+                    // Hit the pulse healthcheck route to confirm life signs
+                    def response = sh(script: "curl -s http://localhost:8000/pulse", returnStdout: true).trim()
+                    echo "Healthcheck Response: ${response}"
+                    
+                    if (!response.contains('"status":"online"')) {
+                        error("Sanity Check Failed: Application is unreachable or offline.")
+                    }
+                }
             }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline completed flawlessly. Production stack updated successfully!'
+        }
+        failure {
+            echo 'Pipeline execution encountered errors. Check the Docker build logs above to inspect failed test cases.'
         }
     }
 }

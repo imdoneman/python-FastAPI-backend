@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://tea_user:tea_password@db:5432/tea_db
+    depends_on:
+      db:
+        condition: service_healthy  # Ensures db health check passes first
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=tea_user
+      - POSTGRES_PASSWORD=tea_password
+      - POSTGRES_DB=tea_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tea_user -d tea_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

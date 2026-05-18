@@ -1,37 +1,44 @@
-# --- STAGE 1: Builder & Tester ---
-# We use 'slim' to get the necessary build tools while keeping it relatively small.
-FROM python:3.12-alpine AS builder
-
-# Prevent Python from writing .pyc files and buffering stdout/stderr
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# =====================================================================
+# STAGE 1: BUILDER & TESTING ENVIRONMENT
+# =====================================================================
+FROM python:3.11-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies first to leverage Docker layer caching
+# Install compilation toolset required for compiling C-extensions on Alpine
+RUN apk update && apk add --no-cache \
+    build-base \
+    postgresql-dev \
+    gcc \
+    musl-dev
+
 COPY requirements.txt .
+
+# Install dependencies globally into Alpine's standard site-packages layout
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code and tests
+# Copy application files and test suites
 COPY . .
 
-# THE GATEKEEPER: Run pytest during the build process
-# If any test in test_app.py fails, the build will stop here, and no image will be created.
-RUN pytest test_main.py
+# 🔥 Embedded CI/CD Gate: Execute tests. 
+# If tests fail, the build halts immediately, preventing broken code from becoming an image.
+RUN python -m pytest
 
-# --- STAGE 2: Final Production Runner ---
-# We switch to 'alpine' for the smallest possible security footprint.
-FROM python:3.12-alpine
+# =====================================================================
+# STAGE 2: LEAN RUNTIME ENVIRONMENT
+# =====================================================================
+FROM python:3.11-alpine AS runner
 
 WORKDIR /app
 
-# Copy only the installed site-packages from the builder stage
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-# Copy only the application file needed for production
-COPY main.py .
+# Install ONLY the runtime dynamic library needed by the postgres driver (libpq)
+RUN apk update && apk add --no-cache libpq
 
-# Expose the port FastAPI will run on
+# Copy pre-compiled Python packages directly from the builder's global site-packages
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /app /app
+
 EXPOSE 8000
 
-# Run the app using Uvicorn for production-grade performance
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
