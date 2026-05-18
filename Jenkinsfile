@@ -9,7 +9,7 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'main',
+                git branch: 'iteration-2',
                     url: 'https://github.com/imdoneman/python-FastAPI-backend.git'
             }
         }
