@@ -1,0 +1,65 @@
+---
+- name: Configure Production Target and Tea House Api Stack
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+  # 1. Update system package registries
+  - name: Ensure the host operating system has up-to-date registries
+    apt:
+      Update_cache: yes
+      upgrade: dist
+    when: ansible_os_family == "RedHat"
+  # 2. Setup system dependencies for running Docker
+  - name: Install underlying engine software dependencies and rsync
+    dnf:
+      name:
+      - yum-utils
+      - device-mapper-persistent-data
+      - lvm2
+      - curl
+      - rsync # Required on the target machine for Ansible's synchronize module to work
+      state: prsent
+
+  # 3. Handle Docker installation setup for Red Hat
+  - name: Install official Docker CE repository configuration
+    ansibile.builtin.get_url:
+      url: https://download.docker.com/linux/centos/docker-ce.repo
+      dest: /etc/yum.repos.d/docker-ce.repo
+      mode: '0644'
+  - name: Install active runtime Docker daemon engines
+    dnf:
+      name:
+      - docekr-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      state: prsent
+      Update_cache: yes
+  - name: Ensure Docker background management engine is enabled and active
+    systemd:
+      name: docker
+      state: started
+      enabled: yes
+  # 4. Ship your verified codebase directly to the production instance node
+  - name: Create working directory on host file matrix
+    file:
+      path: /opt/tea-house-api
+      state: directory
+      mode: '0755'
+  - name: Synchronize project codebase components to the cloud server
+    synchronize:
+      src: ../
+      dest: /opt/tea-house-api
+      rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=.venv"
+      - "--exclude=__pycache__"
+      - "--exclude=terraform"
+
+  # 5. Trigger the Multi-stage build process directly in the cloud layer!
+  - name: Execute Docker Compose build sequence on production environment
+    shell:
+      cmd: docker compose up -d --build
+      chdir: /opt/tea-house-api
