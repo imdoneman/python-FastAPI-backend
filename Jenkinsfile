@@ -56,6 +56,30 @@ pipeline {
             }
         }
 
+        // ... (Previous stages: Checkout, Test, Docker Build & Push) ...
+
+        stage('Provision Infrastructure (Terraform)') {
+            steps {
+                echo 'Spinning up AWS hardware via Terraform...'
+                
+                // Inject AWS API keys directly into the execution environment
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh '''
+                        cd terraform/
+                        
+                        # Initialize the backend and provider plugins
+                        terraform init
+                        
+                        # Apply the infrastructure stack bypassing the manual 'yes' prompt
+                        terraform apply -auto-approve
+                    '''
+                }
+            }
+        }
+
         stage('Ansible Production Deployment') {
             steps {
                 withCredentials([
