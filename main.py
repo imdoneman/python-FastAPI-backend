@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
     yield
     # Clean up on shutdown if needed
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, openapi_url="/openapi.json", docs_url="/docs",  redoc_url="/redoc")
 
 # # On boot, look at models.py and build any tables that do not exist yet
 # models.Base.metadata.create_all(bind=engine)

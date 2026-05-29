@@ -41,4 +41,6 @@ COPY --from=builder /app /app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 💡 FIX: Explicitly enforce an empty string root-path to anchor system routes
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--root-path", ""]

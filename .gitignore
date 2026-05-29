@@ -3,3 +3,18 @@ __pycache__/
 *.pyc
 tea_house.db
 test_temp.db
+*.db
+*.pem
+# .gitattributes
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+crash.log
+ansible/hosts
+*.retry
+
+# Ignore local variable definitions containing secrets or personal IPs
+*.tfvars
+*.tfvars.json

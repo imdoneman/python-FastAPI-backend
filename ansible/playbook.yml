@@ -5,61 +5,88 @@
   gather_facts: true
 
   tasks:
-  # 1. Update system package registries
-  - name: Ensure the host operating system has up-to-date registries
-    apt:
-      Update_cache: yes
-      upgrade: dist
-    when: ansible_os_family == "RedHat"
-  # 2. Setup system dependencies for running Docker
-  - name: Install underlying engine software dependencies and rsync
-    dnf:
-      name:
-      - yum-utils
-      - device-mapper-persistent-data
-      - lvm2
-      - curl
-      - rsync # Required on the target machine for Ansible's synchronize module to work
-      state: prsent
+    # 1. Ensure all installed packages on our system are up to date
+    - name: Ensure all installed packages on our system are up to date
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
 
-  # 3. Handle Docker installation setup for Red Hat
-  - name: Install official Docker CE repository configuration
-    ansibile.builtin.get_url:
-      url: https://download.docker.com/linux/centos/docker-ce.repo
-      dest: /etc/yum.repos.d/docker-ce.repo
-      mode: '0644'
-  - name: Install active runtime Docker daemon engines
-    dnf:
-      name:
-      - docekr-ce
-      - docker-ce-cli
-      - containerd.io
-      - docker-compose-plugin
-      state: prsent
-      Update_cache: yes
-  - name: Ensure Docker background management engine is enabled and active
-    systemd:
-      name: docker
-      state: started
-      enabled: yes
-  # 4. Ship your verified codebase directly to the production instance node
-  - name: Create working directory on host file matrix
-    file:
-      path: /opt/tea-house-api
-      state: directory
-      mode: '0755'
-  - name: Synchronize project codebase components to the cloud server
-    synchronize:
-      src: ../
-      dest: /opt/tea-house-api
-      rsync_opts:
-      - "--exclude=.git"
-      - "--exclude=.venv"
-      - "--exclude=__pycache__"
-      - "--exclude=terraform"
+    # 2. Install core system utilities
+    - name: Install underlying package management dependencies and rsync
+      ansible.builtin.dnf:
+        name:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+          - rsync
+        state: present
 
-  # 5. Trigger the Multi-stage build process directly in the cloud layer!
-  - name: Execute Docker Compose build sequence on production environment
-    shell:
-      cmd: docker compose up -d --build
-      chdir: /opt/tea-house-api
+    # 3. Install core Docker Engine via native AL2023 repositories
+    - name: Use default Amazon repository to download and install Docker
+      ansible.builtin.dnf:
+        name: docker
+        state: present
+
+    # 4. Establish plugin directory structure for Docker subsystems
+    - name: Create system plugin directory matrix for CLI components
+      ansible.builtin.file:
+        path: /usr/libexec/docker/cli-plugins
+        state: directory
+        mode: '0755'
+
+    # 5. Install Docker Compose as a native Engine CLI plugin
+    - name: Download current version of docker compose plugin and make executable
+      ansible.builtin.get_url:
+        url: "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-{{ ansible_architecture }}"
+        dest: /usr/libexec/docker/cli-plugins/docker-compose
+        mode: '0755'
+        owner: root
+        group: root
+      notify: Restart Docker Daemon
+
+    # 6. Start and Enable Docker Service at startup
+    - name: Ensure Docker background management engine is enabled and active
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    # 7. Ship your verified codebase directly to the production instance node
+    - name: Create working directory on host file matrix
+      ansible.builtin.file:
+        path: /opt/tea-house-api
+        state: directory
+        mode: '0755'
+
+    - name: Synchronize project codebase components to the cloud server
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../"
+        dest: /opt/tea-house-api/
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.venv"
+          - "--exclude=__pycache__"
+          - "--exclude=terraform"
+          - "--exclude=ansible"
+
+    # 8. 🔥 FIX: Pre-compile image layers by disabling Buildkit to bypass the Buildx requirements entirely
+    - name: Pre-build Docker Compose image dependencies natively
+      ansible.builtin.shell:
+        cmd: docker compose build --pull
+        chdir: /opt/tea-house-api/
+      environment:
+        DOCKER_BUILDKIT: "0"
+        COMPOSE_DOCKER_CLI_BUILD: "0"
+
+    # 9. Launch the container stack in detached mode instantly
+    - name: Launch active runtime container stack in background
+      ansible.builtin.shell:
+        cmd: docker compose up -d
+        chdir: /opt/tea-house-api/
+
+  handlers:
+    - name: Restart Docker Daemon
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
