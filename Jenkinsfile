@@ -18,6 +18,20 @@ pipeline {
             }
         }
 
+        stage('Determine Version') {
+            steps {
+                script {
+                    // Read the file from the codebase and strip any invisible newline characters
+                    def codeVersion = readFile('VERSION').trim()
+                    
+                    // Inject the dynamic tag globally into the Jenkins environment
+                    env.IMAGE_TAG = "v${codeVersion}-${env.BUILD_NUMBER}"
+                    
+                    echo "Locked in dynamic deployment tag: ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
         stage('Execute Pytest Suite') {
             steps {
                 sh '''
