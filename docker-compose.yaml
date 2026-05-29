@@ -2,13 +2,11 @@ version: '3.8'
 
 services:
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${DOCKER_REGISTRY_USER}/tea-house-api:${IMAGE_TAG:-latest}
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://tea_user:tea_password@db:5432/tea_db
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
     depends_on:
       db:
         condition: service_healthy  # Ensures db health check passes first
@@ -16,9 +14,9 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      - POSTGRES_USER=tea_user
-      - POSTGRES_PASSWORD=tea_password
-      - POSTGRES_DB=tea_db
+      - POSTGRES_USER=${DB_USER} #tea_user
+      - POSTGRES_PASSWORD=${DB_PASSWORD} #tea_password
+      - POSTGRES_DB=${DB_NAME} #tea_db
     ports:
       - "5432:5432"
     volumes:

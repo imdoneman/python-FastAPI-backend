@@ -2,56 +2,67 @@ pipeline {
     agent any
 
     environment {
-        // Define standard workspace variables if needed
-        APP_NAME = "tea-house-api"
+        APP_NAME             = "${env.GLOBAL_APP_NAME}"
+        DOCKER_REGISTRY_USER = "${env.GLOBAL_DOCKER_USER}"
+        IMAGE_TAG            = "v${BUILD_NUMBER}"
+        
+        AWS_SSH_KEY_CRED_ID  = 'fastapi-aws-ssh-key'
+        DOCKERHUB_CRED_ID    = 'dockerhub-token'
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'iteration-2',
+                git branch: 'iteration-2-with-jenkins-registry-push',
                     url: 'https://github.com/imdoneman/python-FastAPI-backend.git'
             }
         }
 
-        stage('Build, Test & Deploy Stack') {
+        stage('Execute Pytest Suite') {
             steps {
-                echo 'Starting Container Compilation and Running Embedded Pytest Suite...'
-                
-                // Trigger the multi-stage build. 
-                // Jenkins will fail right here if any of your pytests fail!
-                sh "docker compose down"
-                sh "docker compose up -d --build"
-                
-                echo 'Stack successfully verified and running in detached mode!'
+                sh '''
+                    python3 -m venv .venv
+                    . .venv/bin/activate
+                    pip install -r requirements.txt pytest httpx
+                    pytest test_main.py -v
+                '''
             }
         }
 
-        stage('Verify Runtime Sanity') {
+        stage('Build & Push to Docker Hub') {
             steps {
-                echo 'Executing endpoint verification checks...'
-                script {
-                    // Give the application a few seconds to boot up completely
-                    sh "sleep 5"
-                    
-                    // Hit the pulse healthcheck route to confirm life signs
-                    def response = sh(script: "curl -s http://localhost:8000/pulse", returnStdout: true).trim()
-                    echo "Healthcheck Response: ${response}"
-                    
-                    if (!response.contains('"status":"online"')) {
-                        error("Sanity Check Failed: Application is unreachable or offline.")
-                    }
+                sh "docker build -t ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:${env.IMAGE_TAG} ."
+                sh "docker tag ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:latest"
+
+                withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CRED_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
+                    sh "docker push ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:${env.IMAGE_TAG}"
+                    sh "docker push ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:latest"
+                }
+            }
+        }
+
+        stage('Ansible Production Deployment') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: env.AWS_SSH_KEY_CRED_ID, keyFileVariable: 'SSH_KEY_PATH'),
+                    string(credentialsId: 'production-db-password', variable: 'DB_PASS')
+                ]) {
+                    sh """
+                        cd ansible/
+                        export ANSIBLE_HOST_KEY_CHECKING=False
+                        ansible-playbook -i hosts playbook.yml \
+                          --private-key=\${SSH_KEY_PATH} \
+                          -u ec2-user \
+                          --extra-vars "docker_registry_user=${env.DOCKER_REGISTRY_USER} docker_image_tag=${env.IMAGE_TAG} target_db_user=admin target_db_password=\${DB_PASS} target_db_name=tea_house"
+                    """
                 }
             }
         }
     }
-
     post {
-        success {
-            echo 'Pipeline completed flawlessly. Production stack updated successfully!'
-        }
-        failure {
-            echo 'Pipeline execution encountered errors. Check the Docker build logs above to inspect failed test cases.'
+        always {
+            sh "docker image prune -a -f || true"
         }
     }
 }

@@ -1,5 +1,5 @@
 ---
-- name: Configure Production Target and Tea House Api Stack
+- name: Configure Production Target and Deploy Tea House API Stack
   hosts: all
   become: true
   gather_facts: true
@@ -13,13 +13,12 @@
         update_cache: yes
 
     # 2. Install core system utilities
-    - name: Install underlying package management dependencies and rsync
+    - name: Install underlying package management dependencies
       ansible.builtin.dnf:
         name:
           - yum-utils
           - device-mapper-persistent-data
           - lvm2
-          - rsync
         state: present
 
     # 3. Install core Docker Engine via native AL2023 repositories
@@ -52,38 +51,38 @@
         state: started
         enabled: yes
 
-    # 7. Ship your verified codebase directly to the production instance node
+    # 7. Establish runtime directory structure
     - name: Create working directory on host file matrix
       ansible.builtin.file:
         path: /opt/tea-house-api
         state: directory
         mode: '0755'
 
-    - name: Synchronize project codebase components to the cloud server
-      ansible.posix.synchronize:
-        src: "{{ playbook_dir }}/../"
-        dest: /opt/tea-house-api/
-        rsync_opts:
-          - "--exclude=.git"
-          - "--exclude=.venv"
-          - "--exclude=__pycache__"
-          - "--exclude=terraform"
-          - "--exclude=ansible"
+    # 8. Ship ONLY the orchestration file (No raw python source code needed!)
+    - name: Copy docker-compose configuration definition to host
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../docker-compose.yaml"
+        dest: /opt/tea-house-api/docker-compose.yaml
+        mode: '0644'
 
-    # 8. 🔥 FIX: Pre-compile image layers by disabling Buildkit to bypass the Buildx requirements entirely
-    - name: Pre-build Docker Compose image dependencies natively
+    # 9. Dynamically generate the secure database variables
+    - name: Create secure .env file for Docker Compose runtime
+      ansible.builtin.copy:
+        dest: /opt/tea-house-api/.env
+        mode: '0600'
+        content: |
+          DB_USER={{ target_db_user }}
+          DB_PASSWORD={{ target_db_password }}
+          DB_NAME={{ target_db_name }}
+
+    # 10. Pull the Docker Hub artifact and boot the stack
+    - name: Pull remote artifact and boot container stack
       ansible.builtin.shell:
-        cmd: docker compose build --pull
+        cmd: "docker compose pull && docker compose up -d"
         chdir: /opt/tea-house-api/
       environment:
-        DOCKER_BUILDKIT: "0"
-        COMPOSE_DOCKER_CLI_BUILD: "0"
-
-    # 9. Launch the container stack in detached mode instantly
-    - name: Launch active runtime container stack in background
-      ansible.builtin.shell:
-        cmd: docker compose up -d
-        chdir: /opt/tea-house-api/
+        DOCKER_REGISTRY_USER: "{{ docker_registry_user }}"
+        IMAGE_TAG: "{{ docker_image_tag }}"
 
   handlers:
     - name: Restart Docker Daemon
