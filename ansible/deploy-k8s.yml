@@ -8,7 +8,7 @@
     - name: Ensure RabbitMQ broker is deployed
       kubernetes.core.k8s:
         state: present
-        definition: "{{ lookup('file', '../k8s/rabbitmq.yaml') }}"
+        definition: "{{ lookup('file', playbook_dir + '/../k8s-manifests/rabbitmq.yaml') }}"
 
     - name: Wait for RabbitMQ to become operational
       kubernetes.core.k8s_info:
@@ -23,9 +23,9 @@
     - name: Deploy FastAPI Gateway Service
       kubernetes.core.k8s:
         state: present
-        definition: "{{ lookup('file', '../k8s/api-service.yaml') }}"
+        definition: "{{ lookup('file', playbook_dir + '/../k8s-manifests/api-service.yaml') }}"
 
     - name: Deploy DB Worker Daemon
       kubernetes.core.k8s:
         state: present
-        definition: "{{ lookup('file', '../k8s/db-worker-service.yaml') }}"
+        definition: "{{ lookup('file', playbook_dir + '/../k8s-manifests/db-worker-service.yaml') }}"
