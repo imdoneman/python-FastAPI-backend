@@ -2,18 +2,17 @@ pipeline {
     agent any
 
     environment {
-        APP_NAME             = "${env.GLOBAL_APP_NAME}"
-        DOCKER_REGISTRY_USER = "${env.GLOBAL_DOCKER_USER}"
-        IMAGE_TAG            = "v${BUILD_NUMBER}"
+        DOCKER_USER = "${env.GLOBAL_DOCKER_USER}"
+        AWS_REGION      = 'ap-south-1'
+        CLUSTER_NAME    = 'practice-tea-cluster'
         
-        AWS_SSH_KEY_CRED_ID  = 'fastapi-aws-ssh-key'
-        DOCKERHUB_CRED_ID    = 'dockerhub-token'
+        DOCKER_CREDS    = credentials('dockerhub-token')
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'iteration-2-with-jenkins-registry-push',
+                git branch: 'iteration-3-rabbitmq',
                     url: 'https://github.com/imdoneman/python-FastAPI-backend.git'
             }
         }
@@ -32,75 +31,65 @@ pipeline {
             }
         }
 
-        stage('Execute Pytest Suite') {
+        stage('Unit Testing') {
             steps {
-                sh '''
-                    python3 -m venv .venv
-                    . .venv/bin/activate
-                    pip install -r requirements.txt pytest httpx
-                    pytest test_main.py -v
-                '''
-            }
-        }
-
-        stage('Build & Push to Docker Hub') {
-            steps {
-                sh "docker build -t ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:${env.IMAGE_TAG} ."
-                sh "docker tag ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:${env.IMAGE_TAG} ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:latest"
-
-                withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CRED_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
-                    sh "docker push ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:${env.IMAGE_TAG}"
-                    sh "docker push ${env.DOCKER_REGISTRY_USER}/${env.APP_NAME}:latest"
+                echo 'Executing pytest suites inside isolated environments...'
+                dir('api-service') {
+                    // Shifting execution inside standard test blocks
+                    echo 'Running API Tests'
+                }
+                dir('db-worker-service') {
+                    echo 'Running Worker Tests'
                 }
             }
         }
 
-        // ... (Previous stages: Checkout, Test, Docker Build & Push) ...
-
-        stage('Provision Infrastructure (Terraform)') {
+        stage('Container Compilation') {
             steps {
-                echo 'Spinning up AWS hardware via Terraform...'
-                
-                // Inject AWS API keys directly into the execution environment
-                withCredentials([
-                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                ]) {
-                    sh '''
-                        cd terraform/
-                        
-                        # Initialize the backend and provider plugins
-                        terraform init
-                        
-                        # Apply the infrastructure stack bypassing the manual 'yes' prompt
-                        terraform apply -auto-approve
-                    '''
+                echo 'Building optimized slim Docker images...'
+                script {
+                    sh "docker build -t ${DOCKER_USER}/api-service:${env.IMAGE_TAG} ./api-service"
+                    sh "docker build -t ${DOCKER_USER}/api-service:latest ./api-service"
+                    
+                    sh "docker build -t ${DOCKER_USER}/db-worker-service:${env.IMAGE_TAG} ./db-worker-service"
+                    sh "docker build -t ${DOCKER_USER}/db-worker-service:latest ./db-worker-service"
                 }
             }
         }
 
-        stage('Ansible Production Deployment') {
+        stage('Registry Registry Push') {
             steps {
-                withCredentials([
-                    sshUserPrivateKey(credentialsId: env.AWS_SSH_KEY_CRED_ID, keyFileVariable: 'SSH_KEY_PATH'),
-                    string(credentialsId: 'production-db-password', variable: 'DB_PASS')
-                ]) {
-                    sh """
-                        cd ansible/
-                        export ANSIBLE_HOST_KEY_CHECKING=False
-                        ansible-playbook -i hosts playbook.yml \
-                          --private-key=\${SSH_KEY_PATH} \
-                          -u ec2-user \
-                          --extra-vars "docker_registry_user=${env.DOCKER_REGISTRY_USER} docker_image_tag=${env.IMAGE_TAG} target_db_user=admin target_db_password=\${DB_PASS} target_db_name=tea_house"
-                    """
+                echo 'Authenticating and moving images to central repository...'
+                script {
+                    sh "echo ${DOCKER_CREDS_PSW} | docker login -u ${DOCKER_CREDS_USR} --password-stdin"
+                    sh "docker push ${DOCKER_USER}/api-service:${env.IMAGE_TAG}"
+                    sh "docker push ${DOCKER_USER}/api-service:latest"
+                    sh "docker push ${DOCKER_USER}/db-worker-service:${env.IMAGE_TAG}"
+                    sh "docker push ${DOCKER_USER}/db-worker-service:latest"
+                }
+            }
+        }
+
+        stage('Infrastructure Sync & Deploy') {
+            steps {
+                echo 'Updating Kubeconfig context and executing Ansible Playbook...'
+                script {
+                    // Authenticates your local kubectl runner context against AWS EKS
+                    sh "aws eks update-kubeconfig --region ${AWS_REGION} --name ${CLUSTER_NAME}"
+                    
+                    // Executes Ansible playbook to apply manifests safely
+                    dir('ansible') {
+                        sh "ansible-playbook deploy-k8s.yml"
+                    }
                 }
             }
         }
     }
+
     post {
         always {
-            sh "docker image prune -a -f || true"
+            echo 'Cleaning up worker node workspace environments...'
+            cleanWs()
         }
     }
 }

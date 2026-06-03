@@ -1,11 +1,36 @@
+# =========================
+# 1. Security & Secrets
+# =========================
+*.pem
+*.key
+.env
+.envrc
+# Ignore local variable definitions containing secrets
+*.tfvars
+*.tfvars.json
+
+# =========================
+# 2. Python & Environments
+# =========================
+*_venv/
+venv/
 .venv/
 __pycache__/
-*.pyc
-tea_house.db
-test_temp.db
-*.db
-*.pem
-# .gitattributes
+*.py[cod]
+*$py.class
+*.so
+
+# =========================
+# 3. Testing & Coverage
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# =========================
+# 4. Terraform & Ansible
+# =========================
 .terraform/
 terraform.tfstate
 terraform.tfstate.backup
@@ -15,6 +40,10 @@ crash.log
 ansible/hosts
 *.retry
 
-# Ignore local variable definitions containing secrets or personal IPs
-*.tfvars
-*.tfvars.json
+# =========================
+# 5. OS & IDE
+# =========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

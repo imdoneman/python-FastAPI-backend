@@ -1,0 +1,31 @@
+---
+- name: Deploy Microservices to EKS Cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Ensure RabbitMQ broker is deployed
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file', '../k8s/rabbitmq.yaml') }}"
+
+    - name: Wait for RabbitMQ to become operational
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        name: rabbitmq
+        namespace: default
+      register: rabbitmq_status
+      until: "rabbitmq_status.resources[0].status.readyReplicas | default(0) == 1"
+      retries: 10
+      delay: 10
+
+    - name: Deploy FastAPI Gateway Service
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file', '../k8s/api-service.yaml') }}"
+
+    - name: Deploy DB Worker Daemon
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file', '../k8s/db-worker-service.yaml') }}"
