@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-worker-service
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-worker-service
+  template:
+    metadata:
+      labels:
+        app: db-worker-service
+    spec:
+      containers:
+      - name: db-worker-service
+        image: dockeriamdoneman/db-worker-service:latest
+        imagePullPolicy: Always
+        env:
+        - name: RABBITMQ_URL
+          value: "amqp://guest:guest@rabbitmq-service:5672//"
