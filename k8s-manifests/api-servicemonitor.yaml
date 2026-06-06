@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api-gateway-monitor
+  labels:
+    release: prometheus # This label tells the Helm chart to pick this up
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  endpoints:
+  - port: http-metrics
+    interval: 15s
+    path: /metrics

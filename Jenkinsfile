@@ -79,7 +79,7 @@ pipeline {
                     
                     // Executes Ansible playbook to apply manifests safely
                     dir('ansible') {
-                        sh "ansible-playbook deploy-k8s.yml"
+                        sh "ansible-playbook deploy-k8s.yml --vault-password-file /var/jenkins_home/.vault_pass"
                     }
                 }
             }

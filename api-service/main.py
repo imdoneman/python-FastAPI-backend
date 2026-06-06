@@ -2,6 +2,7 @@ import time
 import httpx2
 from fastapi import FastAPI, HTTPException, status
 from typing import List
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # 💡 Notice what is missing: Zero database imports. No SQLAlchemy. No engine.
 from schemas import TeaCreate, TeaResponse
@@ -23,6 +24,8 @@ INTERNAL_DB_SERVICE_URL = "http://db-worker-service:8080"
 def read_root():
     return {"message": "welcome to the distributed tea house"}
 
+# Initialize and expose the /metrics endpoint
+Instrumentator().instrument(app).expose(app)
 
 @app.get("/pulse")
 def pulse():

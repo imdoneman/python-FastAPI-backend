@@ -1,39 +1,38 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: api-service
-  namespace: default
+  name: api-gateway
+  labels:
+    app: api-gateway
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: api-service
+      app: api-gateway
   template:
     metadata:
       labels:
-        app: api-service
+        app: api-gateway
     spec:
       containers:
-      - name: api-service
-        image: dockeriamdoneman/api-service:latest
-        imagePullPolicy: Always
+      - name: api-container
+        image: dev-boops.dkr.ecr.ap-south-1.amazonaws.com/tea-house-api:latest
         ports:
         - containerPort: 8000
-        env:
-        - name: RABBITMQ_URL
-          value: "amqp://guest:guest@rabbitmq-service:5672//"
-        # Add your database environment variables here if using external DB
+          name: http-metrics # Required for Prometheus
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: api-service
-  namespace: default
+  labels:
+    app: api-gateway
 spec:
-  selector:
-    app: api-service
-  ports:
-  - protocol: TCP
-    port: 8000
-    targetPort: 8000
   type: NodePort
+  ports:
+  - port: 8000
+    targetPort: 8000
+    nodePort: 31456 
+    name: http-metrics # Must match the container port name
+  selector:
+    app: api-gateway
