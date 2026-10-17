@@ -1,19 +1,40 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+
+from time import time
 from typing import List
-import time
+
+from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel
+
 
 app = FastAPI()
 
+start_time = time()
+next_tea_id = 1
 
-class Tea(BaseModel):
-    id: int
+
+class TeaInput(BaseModel):
     name: str
     origin: str
 
 
+class Tea(TeaInput):
+    id: int
+
+
 teas: List[Tea] = []
-start_time = time.time()
+
+
+def create_tea(tea_input: TeaInput) -> None:
+    """Add a tea using the next available ID."""
+    global next_tea_id
+
+    tea = Tea(
+        id=next_tea_id,
+        name=tea_input.name,
+        origin=tea_input.origin,
+    )
+    teas.append(tea)
+    next_tea_id += 1
 
 
 @app.get("/")
@@ -25,44 +46,67 @@ def read_root():
 def pulse():
     return {
         "status": "online",
-        "uptime": f"{int(time.time() - start_time)}s",
-        "version": "1.0.0"
+        "uptime": f"{int(time() - start_time)}s",
+        "version": "1.1.0",
     }
 
 
-@app.get("/teas")
+@app.get("/teas", response_model=List[Tea])
 def home_teas():
     return teas
 
 
-@app.post("/teas")
-def add_teas(tea: Tea):
-    teas.append(tea)
-    return teas
+@app.post("/teas", status_code=201)
+def add_tea(tea: TeaInput):
+    create_tea(tea)
+    return {"inserted": 1}
 
 
 @app.post("/teas/bulk")
-def add_multiple_teas(multiple_teas: List[Tea]):
-    try:
-        teas.extend(multiple_teas)
-        return {"message": f"Added {len(teas)} teas!"}
-    except Exception as e:
-        return {"error": "Something went wrong!", "details": str(e)}
+def add_multiple_teas(
+    multiple_teas: List[TeaInput],
+    response: Response,
+):
+    inserted_count = len(multiple_teas)
+
+    if inserted_count == 0:
+        response.status_code = 200
+        return {"inserted": 0}
+
+    # FastAPI validates the entire request body before this function runs.
+    # Therefore, invalid input cannot cause a partially inserted batch.
+    for tea in multiple_teas:
+        create_tea(tea)
+
+    response.status_code = 201
+    return {"inserted": inserted_count}
 
 
-@app.put("/teas/{tea_id}")
-def update_teas(tea_id: int, updated_tea: Tea):
+@app.put("/teas/{tea_id}", response_model=List[Tea])
+def update_tea(tea_id: int, updated_tea: TeaInput):
     for index, tea in enumerate(teas):
         if tea.id == tea_id:
-            teas[index] = updated_tea
+            teas[index] = Tea(
+                id=tea_id,
+                name=updated_tea.name,
+                origin=updated_tea.origin,
+            )
             return teas
-    return {"error": "no record found"}
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Tea with ID {tea_id} not found",
+    )
 
 
-@app.delete("/teas/{tea_id}")
-def delete_teas(tea_id: int):
+@app.delete("/teas/{tea_id}", response_model=List[Tea])
+def delete_tea(tea_id: int):
     for index, tea in enumerate(teas):
         if tea.id == tea_id:
             teas.pop(index)
             return teas
-    return "no record found"
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Tea with ID {tea_id} not found",
+    )
