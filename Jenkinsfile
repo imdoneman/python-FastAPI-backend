@@ -139,12 +139,6 @@ pipeline {
 
                         IMAGE_ARCHIVE="${APP_NAME}-${IMAGE_TAG}.tar"
 
-                        // ssh \
-                        //     -i "$SSH_KEY_PATH" \
-                        //     -o BatchMode=yes \
-                        //     -o StrictHostKeyChecking=accept-new \
-                        //     "${SSH_USER}@${EC2_IP}" \
-                        //     'id; df -h /tmp; df -i /tmp; ls -ld /tmp; touch /tmp/jenkins-scp-test && rm /tmp/jenkins-scp-test'
 
                         # Transfer the already-built image archive.
                         scp \
