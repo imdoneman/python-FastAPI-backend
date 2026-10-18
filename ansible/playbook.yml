@@ -9,14 +9,9 @@
     app_dir: /opt/tea-house-api
     image_tag: "{{ tea_house_image_tag | default('2.2.0') }}"
     image_name: "tea-house-api:{{ image_tag }}"
-    image_archive: "/tmp/tea-house-api-{{ image_tag }}.tar"
+    image_archive: "/home/ec2-user/tea-house-api-{{ image_tag }}.tar"
 
   tasks:
-    - name: Update installed packages
-      ansible.builtin.dnf:
-        name: "*"
-        state: latest
-        update_cache: true
 
     - name: Install Docker and required utilities
       ansible.builtin.dnf:
