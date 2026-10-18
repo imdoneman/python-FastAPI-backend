@@ -1,44 +1,26 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+
 from contextlib import asynccontextmanager
-from pydantic import BaseModel
+from time import time
 from typing import List
-import time
+
+from fastapi import Depends, FastAPI, HTTPException, Response, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-# Import our database infrastructure components
 import models
-from schemas import TeaCreate, TeaResponse
 from database import engine, get_db
+from schemas import TeaCreate, TeaResponse
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # This runs on web server startup (production/dev mode)
     models.Base.metadata.create_all(bind=engine)
     yield
-    # Clean up on shutdown if needed
-
-app = FastAPI(lifespan=lifespan, openapi_url="/openapi.json", docs_url="/docs",  redoc_url="/redoc")
-
-# # On boot, look at models.py and build any tables that do not exist yet
-# models.Base.metadata.create_all(bind=engine)
 
 
-start_time = time.time()
+app = FastAPI(lifespan=lifespan)
+start_time = time()
 
-
-# class Tea(BaseModel):
-#     id: int
-#     name: str
-#     origin: str
-
-
-# teas: List[Tea] = []
-
-
-# =====================================================================
-# API ENDPOINTS (The Monolith CRUD Routes)
-# =====================================================================
 
 @app.get("/")
 def read_root():
@@ -49,77 +31,209 @@ def read_root():
 def pulse():
     return {
         "status": "online",
-        "uptime": f"{int(time.time() - start_time)}s",
-        "version": "1.0.4"
+        "uptime": f"{int(time() - start_time)}s",
+        "version": "2.1.0",
     }
 
 
 @app.get("/teas", response_model=List[TeaResponse])
-def home_teas(db: Session = Depends(get_db)):
-    # Query all records from the 'teas' table
+def list_teas(db: Session = Depends(get_db)):
     return db.query(models.TeaItem).all()
 
 
-@app.post("/teas", response_model=TeaResponse, status_code=status.HTTP_201_CREATED)
-def add_teas(tea: TeaCreate, db: Session = Depends(get_db)):
-
-    existing_tea = db.query(models.TeaItem).filter(
-        # Enforce uniqueness constraint check manually for clean API error returns
-        models.TeaItem.name == tea.name).first()
+@app.post("/teas", status_code=status.HTTP_201_CREATED)
+def create_tea(tea: TeaCreate, db: Session = Depends(get_db)):
+    existing_tea = (
+        db.query(models.TeaItem)
+        .filter(models.TeaItem.name == tea.name)
+        .first()
+    )
 
     if existing_tea:
         raise HTTPException(
-            status_code=400, detail="This tea variety already exist in inventory.")
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Tea name '{tea.name}' already exists.",
+        )
 
     db_tea = models.TeaItem(**tea.model_dump())
     db.add(db_tea)
-    db.commit()
-    db.refresh(db_tea)
-    return db_tea
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Tea name '{tea.name}' already exists.",
+        )
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Tea creation failed. No tea was inserted.",
+        )
+
+    return {"inserted": 1}
 
 
 @app.post("/teas/bulk")
-def add_multiple_teas(multiple_teas: List[TeaCreate], db: Session = Depends(get_db)):
+def create_teas(
+    tea_inputs: List[TeaCreate],
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    if not tea_inputs:
+        return {
+            "inserted": 0,
+            "message": "No teas were submitted; nothing was inserted.",
+        }
+
+    names = [tea.name for tea in tea_inputs]
+    seen_names = set()
+    repeated_names = set()
+
+    for name in names:
+        if name in seen_names:
+            repeated_names.add(name)
+        seen_names.add(name)
+
+    if repeated_names:
+        repeated_name = sorted(repeated_names)[0]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Bulk insertion aborted. No teas were inserted.",
+                "reason": (
+                    f"Tea name '{repeated_name}' appears more than once "
+                    "in this batch."
+                ),
+            },
+        )
+
+    existing_teas = (
+        db.query(models.TeaItem)
+        .filter(models.TeaItem.name.in_(names))
+        .all()
+    )
+
+    if existing_teas:
+        existing_name = existing_teas[0].name
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Bulk insertion aborted. No teas were inserted.",
+                "reason": f"Tea name '{existing_name}' already exists.",
+            },
+        )
+
+    db.add_all(
+        models.TeaItem(**tea.model_dump())
+        for tea in tea_inputs
+    )
+
     try:
-        inserted_count = 0
-        for tea_data in multiple_teas:
-            # Check for duplicates inline during bulk processing
-            if not db.query(models.TeaItem).filter(models.TeaItem.name == tea_data.name).first():
-                db_tea = models.TeaItem(**tea_data.model_dump())
-                db.add(db_tea)
-                inserted_count += 1
         db.commit()
-        return {"message": f"Successfully processed Items! add {inserted_count} fresh entries."}
-    except Exception as e:
-        db.rollback()  # Safely abort transaction if structure errors happen
-        raise HTTPException(status_code=500, detail={
-                            "error": "bulk insertion failed", "details": str(e)})
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Bulk insertion aborted. No teas were inserted.",
+                "reason": (
+                    "A tea name conflicts with an existing record. "
+                    "Please refresh the inventory and retry."
+                ),
+            },
+        )
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Bulk insertion failed. No teas were inserted.",
+        )
+
+    response.status_code = status.HTTP_201_CREATED
+    return {"inserted": len(tea_inputs)}
 
 
 @app.put("/teas/{tea_id}", response_model=TeaResponse)
-def update_teas(tea_id: int, updated_tea: TeaCreate, db: Session = Depends(get_db)):
-    db_tea = db.query(models.TeaItem).filter(
-        models.TeaItem.id == tea_id).first()
+def update_tea(
+    tea_id: int,
+    updated_tea: TeaCreate,
+    db: Session = Depends(get_db),
+):
+    db_tea = (
+        db.query(models.TeaItem)
+        .filter(models.TeaItem.id == tea_id)
+        .first()
+    )
+
     if not db_tea:
         raise HTTPException(
-            status_code=404, detail="No record found with that ID.")
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Tea with ID {tea_id} not found.",
+        )
 
-    # Update object values directly
+    conflicting_tea = (
+        db.query(models.TeaItem)
+        .filter(
+            models.TeaItem.name == updated_tea.name,
+            models.TeaItem.id != tea_id,
+        )
+        .first()
+    )
+
+    if conflicting_tea:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Tea name '{updated_tea.name}' already exists.",
+        )
+
     db_tea.name = updated_tea.name
     db_tea.origin = updated_tea.origin
 
-    db.commit()
-    db.refresh(db_tea)
+    try:
+        db.commit()
+        db.refresh(db_tea)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Tea name '{updated_tea.name}' already exists.",
+        )
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Tea update failed.",
+        )
+
     return db_tea
 
 
 @app.delete("/teas/{tea_id}")
-def delete_teas(tea_id: int, db: Session = Depends(get_db)):
-    db_tea = db.query(models.TeaItem).filter(
-        models.TeaItem.id == tea_id).first()
+def delete_tea(tea_id: int, db: Session = Depends(get_db)):
+    db_tea = (
+        db.query(models.TeaItem)
+        .filter(models.TeaItem.id == tea_id)
+        .first()
+    )
+
     if not db_tea:
         raise HTTPException(
-            status_code=404, detail="No record found with that ID.")
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Tea with ID {tea_id} not found.",
+        )
+
     db.delete(db_tea)
-    db.commit()
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Tea deletion failed.",
+        )
+
     return {"message": f"Successfully deleted tea item with ID {tea_id}"}
