@@ -1,57 +1,213 @@
+
 pipeline {
     agent any
 
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
     environment {
-        // Define standard workspace variables if needed
-        APP_NAME = "tea-house-api"
+        APP_NAME   = 'tea-house-api'
+        IMAGE_TAG  = '2.2.0'
+        AWS_REGION = 'ap-south-1'
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'iteration-2',
-                    url: 'https://github.com/imdoneman/python-FastAPI-backend.git'
+                checkout scm
+
+                sh '''
+                    set -eu
+                    test -f Dockerfile
+                    test -f docker-compose.yaml
+                    test -f terraform/main.tf
+                    test -f ansible/playbook.yml
+                '''
             }
         }
 
-        stage('Build, Test & Deploy Stack') {
+        stage('Build and Test Image') {
             steps {
-                echo 'Starting Container Compilation and Running Embedded Pytest Suite...'
-                
-                // Trigger the multi-stage build. 
-                // Jenkins will fail right here if any of your pytests fail!
-                sh "docker compose down"
-                sh "docker compose up -d --build"
-                
-                echo 'Stack successfully verified and running in detached mode!'
+                sh '''
+                    set -eu
+
+                    IMAGE_NAME="${APP_NAME}:${IMAGE_TAG}"
+                    IMAGE_ARCHIVE="${APP_NAME}-${IMAGE_TAG}.tar"
+
+                    docker build \
+                        --target runner \
+                        --tag "$IMAGE_NAME" \
+                        .
+
+                    docker image save \
+                        --output "$IMAGE_ARCHIVE" \
+                        "$IMAGE_NAME"
+
+                    test -s "$IMAGE_ARCHIVE"
+                '''
             }
         }
 
-        stage('Verify Runtime Sanity') {
+        stage('Provision EC2') {
             steps {
-                echo 'Executing endpoint verification checks...'
-                script {
-                    // Give the application a few seconds to boot up completely
-                    sh "sleep 5"
-                    
-                    // Hit the pulse healthcheck route to confirm life signs
-                    def response = sh(script: "curl -s http://localhost:8000/pulse", returnStdout: true).trim()
-                    echo "Healthcheck Response: ${response}"
-                    
-                    if (!response.contains('"status":"online"')) {
-                        error("Sanity Check Failed: Application is unreachable or offline.")
+                withCredentials([
+                    string(
+                        credentialsId: 'aws-access-key-id',
+                        variable: 'AWS_ACCESS_KEY_ID'
+                    ),
+                    string(
+                        credentialsId: 'aws-secret-access-key',
+                        variable: 'AWS_SECRET_ACCESS_KEY'
+                    )
+                ]) {
+                    script {
+                        withEnv(["AWS_DEFAULT_REGION=${env.AWS_REGION}"]) {
+                            sh '''
+                                set -eu
+
+                                terraform -chdir=terraform init
+                                terraform -chdir=terraform validate
+                                terraform -chdir=terraform plan \
+                                    -out=tfplan
+                                terraform -chdir=terraform apply \
+                                    -auto-approve tfplan
+                            '''
+
+                            env.EC2_IP = sh(
+                                script: 'terraform -chdir=terraform output -raw server_public_ip',
+                                returnStdout: true
+                            ).trim()
+
+                            env.SSH_USER = sh(
+                                script: 'terraform -chdir=terraform output -raw ssh_username',
+                                returnStdout: true
+                            ).trim()
+                        }
                     }
                 }
+
+                echo "Provisioned EC2 address: ${env.EC2_IP}"
+            }
+        }
+
+        stage('Deploy to EC2') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'fastapi-aws-ssh-key',
+                        keyFileVariable: 'SSH_KEY_PATH',
+                        usernameVariable: 'SSH_CREDENTIAL_USER'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+
+                        mkdir -p "$HOME/.ssh"
+                        chmod 700 "$HOME/.ssh"
+
+                        # Confirm that the credential matches the EC2 login.
+                        if [ "$SSH_CREDENTIAL_USER" != "$SSH_USER" ]; then
+                            echo "SSH credential username does not match Terraform's SSH username."
+                            exit 1
+                        fi
+
+                        # Wait for EC2 SSH to become available.
+                        CONNECTED=false
+
+                        for attempt in $(seq 1 30); do
+                            if ssh \
+                                -i "$SSH_KEY_PATH" \
+                                -o BatchMode=yes \
+                                -o ConnectTimeout=5 \
+                                -o StrictHostKeyChecking=accept-new \
+                                "${SSH_USER}@${EC2_IP}" \
+                                'true'; then
+                                CONNECTED=true
+                                break
+                            fi
+
+                            echo "Waiting for EC2 SSH ($attempt/30)..."
+                            sleep 10
+                        done
+
+                        if [ "$CONNECTED" != true ]; then
+                            echo "EC2 SSH connection did not become available."
+                            exit 1
+                        fi
+
+                        IMAGE_ARCHIVE="${APP_NAME}-${IMAGE_TAG}.tar"
+
+                        # Transfer the already-built image archive.
+                        scp \
+                            -i "$SSH_KEY_PATH" \
+                            -o BatchMode=yes \
+                            -o StrictHostKeyChecking=accept-new \
+                            "$IMAGE_ARCHIVE" \
+                            "${SSH_USER}@${EC2_IP}:/tmp/${IMAGE_ARCHIVE}"
+
+                        # Configure EC2 and deploy without rebuilding the API.
+                        ansible-playbook \
+                            -i "${EC2_IP}," \
+                            ansible/playbook.yml \
+                            -u "$SSH_USER" \
+                            --private-key "$SSH_KEY_PATH" \
+                            -e "tea_house_image_tag=${IMAGE_TAG}"
+                    '''
+                }
+            }
+        }
+
+        stage('Verify Remote API') {
+            steps {
+                sh '''
+                    set -eu
+
+                    RESPONSE=""
+
+                    for attempt in $(seq 1 12); do
+                        RESPONSE=$(curl \
+                            --silent \
+                            --show-error \
+                            --fail \
+                            --max-time 10 \
+                            "http://${EC2_IP}:8000/pulse" \
+                            2>/dev/null) || RESPONSE=""
+
+                        if printf '%s' "$RESPONSE" |
+                            grep -q '"status"[[:space:]]*:[[:space:]]*"online"'; then
+                            echo "Remote health check passed:"
+                            echo "$RESPONSE"
+                            exit 0
+                        fi
+
+                        echo "Waiting for API health ($attempt/12)..."
+                        sleep 5
+                    done
+
+                    echo "Remote API health check failed."
+                    exit 1
+                '''
             }
         }
     }
 
     post {
         success {
-            echo 'Pipeline completed flawlessly. Production stack updated successfully!'
+            echo "Deployment successful: ${APP_NAME}:${IMAGE_TAG}"
+            echo "API endpoint: http://${env.EC2_IP}:8000/pulse"
         }
+
         failure {
-            echo 'Pipeline execution encountered errors. Check the Docker build logs above to inspect failed test cases.'
+            echo 'Pipeline failed. Review the stage logs before retrying.'
+        }
+
+        always {
+            sh '''
+                rm -f "${APP_NAME}-${IMAGE_TAG}.tar"
+                rm -f terraform/tfplan
+            '''
         }
     }
 }

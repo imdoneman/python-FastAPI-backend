@@ -1,92 +1,138 @@
+
 ---
-- name: Configure Production Target and Tea House Api Stack
+- name: Configure EC2 and deploy Tea House API
   hosts: all
   become: true
   gather_facts: true
 
+  vars:
+    app_dir: /opt/tea-house-api
+    image_tag: "{{ tea_house_image_tag | default('2.2.0') }}"
+    image_name: "tea-house-api:{{ image_tag }}"
+    image_archive: "/tmp/tea-house-api-{{ image_tag }}.tar"
+
   tasks:
-    # 1. Ensure all installed packages on our system are up to date
-    - name: Ensure all installed packages on our system are up to date
+    - name: Update installed packages
       ansible.builtin.dnf:
         name: "*"
         state: latest
-        update_cache: yes
+        update_cache: true
 
-    # 2. Install core system utilities
-    - name: Install underlying package management dependencies and rsync
+    - name: Install Docker and required utilities
       ansible.builtin.dnf:
         name:
-          - yum-utils
-          - device-mapper-persistent-data
-          - lvm2
+          - docker
           - rsync
+          - curl
         state: present
 
-    # 3. Install core Docker Engine via native AL2023 repositories
-    - name: Use default Amazon repository to download and install Docker
-      ansible.builtin.dnf:
-        name: docker
-        state: present
-
-    # 4. Establish plugin directory structure for Docker subsystems
-    - name: Create system plugin directory matrix for CLI components
-      ansible.builtin.file:
-        path: /usr/libexec/docker/cli-plugins
-        state: directory
-        mode: '0755'
-
-    # 5. Install Docker Compose as a native Engine CLI plugin
-    - name: Download current version of docker compose plugin and make executable
-      ansible.builtin.get_url:
-        url: "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-{{ ansible_architecture }}"
-        dest: /usr/libexec/docker/cli-plugins/docker-compose
-        mode: '0755'
-        owner: root
-        group: root
-      notify: Restart Docker Daemon
-
-    # 6. Start and Enable Docker Service at startup
-    - name: Ensure Docker background management engine is enabled and active
+    - name: Ensure Docker is enabled and running
       ansible.builtin.systemd:
         name: docker
         state: started
-        enabled: yes
+        enabled: true
 
-    # 7. Ship your verified codebase directly to the production instance node
-    - name: Create working directory on host file matrix
+    - name: Create Docker CLI plugin directory
       ansible.builtin.file:
-        path: /opt/tea-house-api
+        path: /usr/local/lib/docker/cli-plugins
         state: directory
-        mode: '0755'
+        owner: root
+        group: root
+        mode: "0755"
 
-    - name: Synchronize project codebase components to the cloud server
-      ansible.posix.synchronize:
-        src: "{{ playbook_dir }}/../"
-        dest: /opt/tea-house-api/
-        rsync_opts:
-          - "--exclude=.git"
-          - "--exclude=.venv"
-          - "--exclude=__pycache__"
-          - "--exclude=terraform"
-          - "--exclude=ansible"
+    - name: Install Docker Compose plugin
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/docker/compose/releases/latest/download/docker-compose-linux-{{
+          'x86_64' if ansible_architecture == 'x86_64'
+          else 'aarch64' if ansible_architecture == 'aarch64'
+          else ansible_architecture }}
+        dest: /usr/local/lib/docker/cli-plugins/docker-compose
+        owner: root
+        group: root
+        mode: "0755"
 
-    # 8. 🔥 FIX: Pre-compile image layers by disabling Buildkit to bypass the Buildx requirements entirely
-    - name: Pre-build Docker Compose image dependencies natively
-      ansible.builtin.shell:
-        cmd: docker compose build --pull
-        chdir: /opt/tea-house-api/
-      environment:
-        DOCKER_BUILDKIT: "0"
-        COMPOSE_DOCKER_CLI_BUILD: "0"
+    - name: Verify Docker Compose installation
+      ansible.builtin.command:
+        cmd: docker compose version
+      changed_when: false
 
-    # 9. Launch the container stack in detached mode instantly
-    - name: Launch active runtime container stack in background
-      ansible.builtin.shell:
-        cmd: docker compose up -d
-        chdir: /opt/tea-house-api/
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
 
-  handlers:
-    - name: Restart Docker Daemon
-      ansible.builtin.systemd:
-        name: docker
-        state: restarted
+    - name: Copy Docker Compose configuration
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../docker-compose.yaml"
+        dest: "{{ app_dir }}/docker-compose.yaml"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Configure application image tag
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.env"
+        content: |
+          TEA_HOUSE_IMAGE={{ image_name }}
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Verify transferred image archive exists
+      ansible.builtin.stat:
+        path: "{{ image_archive }}"
+      register: image_file
+
+    - name: Stop if the image archive is missing
+      ansible.builtin.assert:
+        that:
+          - image_file.stat.exists
+          - image_file.stat.isreg
+          - image_file.stat.size | int > 0
+        fail_msg: "Expected Docker image archive was not transferred: {{ image_archive }}"
+
+    - name: Load the pre-built application image
+      ansible.builtin.command:
+        cmd: "docker load -i {{ image_archive }}"
+      register: image_load
+      changed_when: "'Loaded image:' in image_load.stdout or 'Loaded image ID:' in image_load.stdout"
+
+    - name: Deploy API and PostgreSQL stack without rebuilding or pulling
+      ansible.builtin.command:
+        cmd: docker compose up -d --no-build --pull never --remove-orphans
+        chdir: "{{ app_dir }}"
+      register: compose_deploy
+      changed_when: >-
+        'Creating' in compose_deploy.stdout or
+        'Starting' in compose_deploy.stdout or
+        'Recreating' in compose_deploy.stdout or
+        'Created' in compose_deploy.stdout or
+        'Started' in compose_deploy.stdout
+
+    - name: Wait for API health endpoint
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8000/pulse
+        method: GET
+        status_code: 200
+        return_content: true
+      register: health_check
+      retries: 18
+      delay: 5
+      until:
+        - health_check.status == 200
+        - health_check.json.status | default('') == 'online'
+
+    - name: Display deployment health
+      ansible.builtin.debug:
+        msg:
+          - "Deployed image: {{ image_name }}"
+          - "Health response: {{ health_check.json }}"
+
+    - name: Remove transferred image archive
+      ansible.builtin.file:
+        path: "{{ image_archive }}"
+        state: absent

@@ -1,26 +1,22 @@
-version: '3.8'
 
 services:
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${TEA_HOUSE_IMAGE:?TEA_HOUSE_IMAGE must be set}
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://tea_user:tea_password@db:5432/tea_db
+      DATABASE_URL: postgresql://tea_user:tea_password@db:5432/tea_db
     depends_on:
       db:
-        condition: service_healthy  # Ensures db health check passes first
+        condition: service_healthy
+    restart: unless-stopped
 
   db:
     image: postgres:16-alpine
     environment:
-      - POSTGRES_USER=tea_user
-      - POSTGRES_PASSWORD=tea_password
-      - POSTGRES_DB=tea_db
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: tea_user
+      POSTGRES_PASSWORD: tea_password
+      POSTGRES_DB: tea_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -28,6 +24,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
 volumes:
   postgres_data:
