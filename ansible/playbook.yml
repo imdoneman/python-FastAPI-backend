@@ -95,6 +95,14 @@
       register: image_load
       changed_when: "'Loaded image:' in image_load.stdout or 'Loaded image ID:' in image_load.stdout"
 
+    
+    - name: Pull PostgreSQL image required by Compose
+      ansible.builtin.command:
+        cmd: docker pull postgres:16-alpine
+      register: postgres_pull
+      changed_when: "'Downloaded newer image' in postgres_pull.stdout or 'Pull complete' in postgres_pull.stdout"
+
+
     - name: Deploy API and PostgreSQL stack without rebuilding or pulling
       ansible.builtin.command:
         cmd: docker compose up -d --no-build --pull never --remove-orphans
