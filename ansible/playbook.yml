@@ -18,7 +18,6 @@
         name:
           - docker
           - rsync
-          - curl
         state: present
 
     - name: Ensure Docker is enabled and running
