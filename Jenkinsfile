@@ -244,7 +244,7 @@ variables = {
 
 with open(sys.argv[1], "w", encoding="utf-8") as file:
     json.dump(variables, file)
-                        PY
+PY
 
                         ansible-playbook \
                             -i "${EC2_IP}," \
