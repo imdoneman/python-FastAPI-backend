@@ -229,21 +229,21 @@ pipeline {
                         export TARGET_DB_PASSWORD="$DB_PASS"
 
                         python3 - "$VARS_FILE" <<'PY'
-                        import json
-                        import os
-                        import sys
+import json
+import os
+import sys
 
-                        variables = {
-                            "app_name": os.environ["APP_NAME"],
-                            "docker_registry_user": os.environ["DOCKER_REGISTRY_USER"],
-                            "docker_image_tag": os.environ["IMAGE_TAG"],
-                            "target_db_user": "admin",
-                            "target_db_password": os.environ["TARGET_DB_PASSWORD"],
-                            "target_db_name": "tea_house",
-                        }
+variables = {
+    "app_name": os.environ["APP_NAME"],
+    "docker_registry_user": os.environ["DOCKER_REGISTRY_USER"],
+    "docker_image_tag": os.environ["IMAGE_TAG"],
+    "target_db_user": "admin",
+    "target_db_password": os.environ["TARGET_DB_PASSWORD"],
+    "target_db_name": "tea_house",
+}
 
-                        with open(sys.argv[1], "w", encoding="utf-8") as file:
-                            json.dump(variables, file)
+with open(sys.argv[1], "w", encoding="utf-8") as file:
+    json.dump(variables, file)
                         PY
 
                         ansible-playbook \
