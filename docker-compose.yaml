@@ -1,31 +1,32 @@
-version: '3.8'
 
 services:
   web:
-    image: ${DOCKER_REGISTRY_USER}/tea-house-api:${IMAGE_TAG:-latest}
+    image: ${DOCKER_REGISTRY_USER:?DOCKER_REGISTRY_USER must be set}/${APP_NAME:?APP_NAME must be set}:${IMAGE_TAG:-latest}
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      DATABASE_URL: postgresql://${DB_USER:?DB_USER must be set}:${DB_PASSWORD:?DB_PASSWORD must be set}@db:5432/${DB_NAME:?DB_NAME must be set}
     depends_on:
       db:
-        condition: service_healthy  # Ensures db health check passes first
+        condition: service_healthy
+    restart: unless-stopped
 
   db:
     image: postgres:16-alpine
     environment:
-      - POSTGRES_USER=${DB_USER} #tea_user
-      - POSTGRES_PASSWORD=${DB_PASSWORD} #tea_password
-      - POSTGRES_DB=${DB_NAME} #tea_db
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${DB_USER:?DB_USER must be set}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      POSTGRES_DB: ${DB_NAME:?DB_NAME must be set}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tea_user -d tea_db"]
+      test:
+        - CMD-SHELL
+        - 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"'
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
 volumes:
   postgres_data:

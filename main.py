@@ -32,7 +32,7 @@ def pulse():
     return {
         "status": "online",
         "uptime": f"{int(time() - start_time)}s",
-        "version": "2.1.0",
+        "version": "2.3.0",
     }
 
 

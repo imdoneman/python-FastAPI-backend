@@ -63,7 +63,7 @@ def test_pulse():
     data = response.json()
     assert data["status"] == "online"
     assert data["uptime"].endswith("s")
-    assert data["version"] == "2.1.0"
+    assert data["version"] == "2.3.0"
 
 
 def test_get_teas_initially_returns_empty_list():

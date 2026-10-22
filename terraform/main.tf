@@ -1,70 +1,100 @@
+
 terraform {
-  required_version = ">=1.0"
+  required_version = ">= 1.0"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~>5.0"
+      version = "~> 5.0"
     }
   }
 }
 
 provider "aws" {
-  region = "ap-south-1"
+  region = var.aws_region
 }
 
-# 1. Create the Security Group Shell Container
+variable "aws_region" {
+  description = "AWS region for the Tea House API server"
+  type        = string
+  default     = "ap-south-1"
+}
+
+variable "ami_id" {
+  description = "Amazon Linux 2023 AMI ID for the target region"
+  type        = string
+  default     = "ami-04394a3a96907e9ec"
+}
+
+variable "instance_type" {
+  description = "EC2 instance type"
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "key_name" {
+  description = "Name of the existing EC2 key pair"
+  type        = string
+  default     = "FastAPI_key"
+}
+
+variable "ssh_allowed_cidr" {
+  description = "CIDR allowed to connect to SSH on the EC2 instance"
+  type        = string
+  default     = "0.0.0.0/0"
+}
+
 resource "aws_security_group" "tea_house_sg" {
   name        = "tea_house_sg"
-  description = "allow ssh traffic for ansible and web traffic for FastAPI"
+  description = "Allow SSH administration and Tea House API access"
 
   tags = {
-    name = "tea_house_sg"
+    Name = "tea-house-api-sg"
   }
 }
 
-# 2. Modern Ingress Rule: SSH Port for Configuration Management (Ansible)
 resource "aws_vpc_security_group_ingress_rule" "allow_ssh" {
   security_group_id = aws_security_group.tea_house_sg.id
-  cidr_ipv4         = "0.0.0.0/0"
+  cidr_ipv4         = var.ssh_allowed_cidr
   from_port         = 22
   ip_protocol       = "tcp"
   to_port           = 22
+  description       = "SSH access for Jenkins and Ansible"
 }
 
-# 3. Modern Ingress Rule: FastAPI Web Traffic Application Port
-resource "aws_vpc_security_group_ingress_rule" "allow_FastAPI" {
+resource "aws_vpc_security_group_ingress_rule" "allow_fastapi" {
   security_group_id = aws_security_group.tea_house_sg.id
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = 8000
   ip_protocol       = "tcp"
   to_port           = 8000
+  description       = "Public Tea House API access"
 }
 
-# 4. Modern Egress Rule: Outbound Internet Access (For downloading updates/Docker images)
 resource "aws_vpc_security_group_egress_rule" "allow_all_traffic_ipv4" {
   security_group_id = aws_security_group.tea_house_sg.id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
+  description       = "Outbound access for package and image downloads"
 }
 
-# 5. Virtual Server Provisioning (EC2)
 resource "aws_instance" "tea_house_server" {
-  ami           = "ami-09ed39e30153c3bf9"
-  instance_type = "t2.micro"
-  key_name      = "FastAPI_key"
-
+  ami                    = var.ami_id
+  instance_type          = var.instance_type
+  key_name               = var.key_name
   vpc_security_group_ids = [aws_security_group.tea_house_sg.id]
 
   tags = {
-    name = "Tea-App-Server"
-  }
-  # Outputs the newly created IP address straight to your Ansible hosts file
-  provisioner "local-exec" {
-    command = "echo ${self.public_ip} > ../ansible/hosts"
+    Name = "Tea-App-Server"
   }
 }
 
 output "server_public_ip" {
+  description = "Public IP address of the Tea House API server"
   value       = aws_instance.tea_house_server.public_ip
-  description = "The public ip address assigned to the Cloud server instance"
+}
+
+output "ssh_username" {
+  description = "Default SSH username for Amazon Linux 2023"
+  value       = "ec2-user"
 }
