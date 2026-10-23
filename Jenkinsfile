@@ -243,35 +243,39 @@ print(f"kubernetes.core {expected} is available.")
         //     }
         // }
 
+        
         stage('Terraform Shell Diagnostic') {
             steps {
+                echo 'MARKER A: Stage entered'
+
                 withCredentials([
                     string(
                         credentialsId: 'aws-access-key-id',
-                        variable: 'AWS_ACCESS_KEY_ID'
-                    ),
-                    string(
-                        credentialsId: 'aws-secret-access_key',
-                        variable: 'AWS_SECRET_ACCESS_KEY'
+                        variable: 'TEST_AWS_ACCESS_KEY'
                     )
                 ]) {
-                    echo 'TEST 1: Credentials bound'
-
-                    sh '''
-                        set +x
-                        echo "TEST 2: Shell started"
-                        echo "TEST 3: Terraform directory"
-                        pwd
-                        cd terraform
-                        echo "TEST 4: Terraform version"
-                        terraform version
-                        echo "TEST 5: Shell completed"
-                    '''
-
-                    echo 'TEST 6: Shell step returned successfully'
+                    echo 'MARKER B: Access credential bound'
+                    sh 'echo "MARKER C: Shell executed"'
+                    echo 'MARKER D: Shell returned'
                 }
+
+                echo 'MARKER E: Access credential scope ended'
+
+                withCredentials([
+                    string(
+                        credentialsId: 'aws-secret-access_key',
+                        variable: 'TEST_AWS_SECRET_KEY'
+                    )
+                ]) {
+                    echo 'MARKER F: Secret credential bound'
+                    sh 'echo "MARKER G: Second shell executed"'
+                    echo 'MARKER H: Second shell returned'
+                }
+
+                echo 'MARKER I: Diagnostic completed'
             }
         }
+
 
 
         stage('Deploy and Verify') {
