@@ -13,6 +13,7 @@ pipeline {
     }
 
     stages {
+        
         stage('Checkout') {
             steps {
                 checkout scm
@@ -22,16 +23,20 @@ pipeline {
                         error('VERSION file is missing.')
                     }
 
-                    env.VERSION = readFile('VERSION').trim()
+                    def baseVersion = readFile('VERSION').trim()
 
-                    if (!(env.VERSION ==~ /^\d+\.\d+\.\d+$/)) {
-                        error("Invalid VERSION: ${env.VERSION}")
+                    if (!(baseVersion ==~ /^\d+\.\d+\.\d+$/)) {
+                        error("Invalid VERSION: ${baseVersion}. Expected format: 3.1.0")
                     }
+
+                    env.BASE_VERSION = baseVersion
+                    env.VERSION = "v${baseVersion}-${env.BUILD_NUMBER}"
 
                     echo "Tea House version: ${env.VERSION}"
                 }
             }
         }
+
 
         stage('Preflight') {
             steps {
@@ -206,7 +211,7 @@ print(f"kubernetes.core {expected} is available.")
                         variable: 'AWS_ACCESS_KEY_ID'
                     ),
                     string(
-                        credentialsId: 'aws-secret-access_key',
+                        credentialsId: 'aws-secret-access-key',
                         variable: 'AWS_SECRET_ACCESS_KEY'
                     ),
                     string(
