@@ -1,4 +1,3 @@
-
 terraform {
   required_version = ">= 1.5.0"
 
@@ -97,6 +96,7 @@ module "eks" {
   cluster_endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
 
   enable_cluster_creator_admin_permissions = true
+  enable_irsa                              = true
 
   eks_managed_node_groups = {
     default = {
@@ -133,6 +133,64 @@ module "eks" {
   }
 }
 
+# IAM role assumed by the EBS CSI controller service account.
+data "aws_iam_policy_document" "ebs_csi_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi_driver" {
+  name               = "${var.cluster_name}-ebs-csi-driver"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume_role.json
+
+  description = "IAM role for the Tea House EKS EBS CSI driver"
+
+  tags = {
+    Project   = "tea-house"
+    ManagedBy = "terraform"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver" {
+  role       = aws_iam_role.ebs_csi_driver.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+# Install the EBS CSI driver into the existing EKS cluster.
+resource "aws_eks_addon" "ebs_csi_driver" {
+  cluster_name             = module.eks.cluster_name
+  addon_name               = "aws-ebs-csi-driver"
+  service_account_role_arn = aws_iam_role.ebs_csi_driver.arn
+
+  depends_on = [
+    aws_iam_role_policy_attachment.ebs_csi_driver
+  ]
+
+  tags = {
+    Project   = "tea-house"
+    ManagedBy = "terraform"
+  }
+}
+
 output "cluster_name" {
   description = "EKS cluster name for Jenkins"
   value       = module.eks.cluster_name
@@ -146,4 +204,9 @@ output "cluster_endpoint" {
 output "vpc_id" {
   description = "VPC ID"
   value       = module.vpc.vpc_id
+}
+
+output "ebs_csi_role_arn" {
+  description = "IAM role ARN used by the EBS CSI driver"
+  value       = aws_iam_role.ebs_csi_driver.arn
 }

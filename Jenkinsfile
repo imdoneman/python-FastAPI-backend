@@ -213,34 +213,23 @@ print(f"kubernetes.core {expected} is available.")
 
                             export AWS_DEFAULT_REGION="$AWS_REGION"
 
-                            echo "Verifying AWS identity..."
                             aws sts get-caller-identity
 
-                            echo "Initializing Terraform..."
                             terraform init -input=false
-
-                            echo "Validating Terraform configuration..."
                             terraform validate
 
-                            echo "Checking Terraform state..."
-                            if [ -f terraform.tfstate ]; then
-                                echo "Local Terraform state found."
-                                terraform state list
-                            else
-                                echo "No local Terraform state file found."
-                                echo "Terraform will plan from the current state."
-                            fi
-
-                            echo "Generating Terraform plan..."
                             terraform plan \
                                 -input=false \
                                 -out=tfplan
 
-                            echo "Applying Terraform plan..."
+                            echo "Review the plan above for unexpected cluster replacement."
                             terraform apply \
                                 -input=false \
                                 -auto-approve \
                                 tfplan
+
+                            echo "Checking EBS CSI role output..."
+                            terraform output -raw ebs_csi_role_arn
 
                             rm -f tfplan
 
@@ -295,6 +284,16 @@ print(f"kubernetes.core {expected} is available.")
                         set +x
 
                         export AWS_DEFAULT_REGION="$AWS_REGION"
+                        echo "Retrieving EBS CSI IAM role ARN from Terraform state..."
+
+                        export EBS_CSI_ROLE_ARN="$(
+                            terraform -chdir=terraform output -raw ebs_csi_role_arn
+                        )"
+
+                        if [ -z "$EBS_CSI_ROLE_ARN" ]; then
+                            echo "ERROR: Terraform returned an empty EBS CSI role ARN."
+                            exit 1
+                        fi  
 
                         echo "Verifying AWS identity..."
                         aws sts get-caller-identity

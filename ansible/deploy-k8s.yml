@@ -1,4 +1,3 @@
-
 ---
 - name: Deploy Tea House to Kubernetes
   hosts: localhost
@@ -6,9 +5,14 @@
   gather_facts: false
 
   vars:
-    namespace: default
+    k8s_namespace: default
+    aws_region: ap-south-1
+    eks_cluster_name: tea-house-eks
+
     manifest_dir: "{{ playbook_dir }}/../k8s-manifests"
     rendered_dir: /tmp/tea-house-k8s-rendered
+
+    ebs_csi_role_arn: "{{ lookup('env', 'EBS_CSI_ROLE_ARN') }}"
 
     postgres_user: "{{ lookup('env', 'POSTGRES_USER') }}"
     postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
@@ -35,6 +39,141 @@
         fail_msg: "Required image variables or deployment credentials are missing."
       no_log: true
 
+    - name: Check AWS CLI identity
+      ansible.builtin.command:
+        argv:
+          - aws
+          - sts
+          - get-caller-identity
+      changed_when: false
+
+    - name: Check EKS cluster access
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - nodes
+          - --request-timeout=15s
+      changed_when: false
+
+    - name: Inspect EBS CSI add-on
+      ansible.builtin.command:
+        argv:
+          - aws
+          - eks
+          - describe-addon
+          - --cluster-name
+          - "{{ eks_cluster_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --addon-name
+          - aws-ebs-csi-driver
+          - --query
+          - addon.status
+          - --output
+          - text
+      register: ebs_addon_status
+      changed_when: false
+      failed_when: false
+
+    - name: Require an IAM role if EBS CSI add-on is missing
+      ansible.builtin.assert:
+        that:
+          - ebs_csi_role_arn | length > 0
+        fail_msg: >-
+          The EBS CSI add-on is not installed. Configure EBS_CSI_ROLE_ARN
+          in Jenkins with an existing IAM role trusted by the EKS EBS CSI
+          service account and with the required EBS CSI permissions.
+      when: ebs_addon_status.rc != 0
+
+    - name: Install EBS CSI add-on
+      ansible.builtin.command:
+        argv:
+          - aws
+          - eks
+          - create-addon
+          - --cluster-name
+          - "{{ eks_cluster_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --addon-name
+          - aws-ebs-csi-driver
+          - --service-account-role-arn
+          - "{{ ebs_csi_role_arn }}"
+      when: ebs_addon_status.rc != 0
+      changed_when: true
+
+    - name: Wait for EBS CSI add-on to become active
+      ansible.builtin.command:
+        argv:
+          - aws
+          - eks
+          - describe-addon
+          - --cluster-name
+          - "{{ eks_cluster_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --addon-name
+          - aws-ebs-csi-driver
+          - --query
+          - addon.status
+          - --output
+          - text
+      register: ebs_addon_ready
+      until: ebs_addon_ready.stdout | trim == "ACTIVE"
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: Wait for EBS CSI controller rollout
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/ebs-csi-controller
+          - -n
+          - kube-system
+          - --timeout=300s
+      changed_when: false
+
+    - name: Create EBS gp3 StorageClass
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: gp3
+          provisioner: ebs.csi.aws.com
+          volumeBindingMode: WaitForFirstConsumer
+          allowVolumeExpansion: true
+          reclaimPolicy: Retain
+          parameters:
+            type: gp3
+            encrypted: "true"
+
+    - name: Check existing PostgreSQL PVC
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: postgres-data-postgres-0
+        namespace: "{{ k8s_namespace }}"
+      register: postgres_pvc
+
+    - name: Check existing PostgreSQL PVC configuration
+      ansible.builtin.assert:
+        that:
+          - >-
+            postgres_pvc.resources | length == 0 or
+            postgres_pvc.resources[0].status.phase | default('Pending') == 'Bound' or
+            postgres_pvc.resources[0].spec.storageClassName | default('') == 'gp3'
+        fail_msg: >-
+          The existing PostgreSQL PVC is Pending without a StorageClass.
+          Set storageClassName: gp3 in the PostgreSQL volumeClaimTemplates.
+          Inspect the PVC before deleting or recreating it.
+      when: postgres_pvc.resources | length > 0
+
     - name: Create directory for rendered manifests
       ansible.builtin.file:
         path: "{{ rendered_dir }}"
@@ -49,7 +188,7 @@
           kind: Secret
           metadata:
             name: postgres-credentials
-            namespace: "{{ namespace }}"
+            namespace: "{{ k8s_namespace }}"
           type: Opaque
           stringData:
             POSTGRES_USER: "{{ postgres_user }}"
@@ -65,7 +204,7 @@
           kind: Secret
           metadata:
             name: rabbitmq-credentials
-            namespace: "{{ namespace }}"
+            namespace: "{{ k8s_namespace }}"
           type: Opaque
           stringData:
             RABBITMQ_USER: "{{ rabbitmq_user }}"
@@ -77,21 +216,19 @@
       kubernetes.core.k8s:
         state: present
         src: "{{ manifest_dir }}/postgres.yaml"
-        wait: true
-        wait_timeout: 300
+        wait: false
 
-    - name: Wait for PostgreSQL StatefulSet
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: StatefulSet
-        name: postgres
-        namespace: "{{ namespace }}"
-      register: postgres_state
-      until:
-        - postgres_state.resources | length == 1
-        - postgres_state.resources[0].status.readyReplicas | default(0) | int >= 1
-      retries: 30
-      delay: 10
+    - name: Wait for PostgreSQL StatefulSet rollout
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - statefulset/postgres
+          - -n
+          - "{{ k8s_namespace }}"
+          - --timeout=300s
+      changed_when: false
 
     - name: Apply RabbitMQ manifest
       kubernetes.core.k8s:
@@ -105,7 +242,7 @@
         api_version: apps/v1
         kind: Deployment
         name: rabbitmq
-        namespace: "{{ namespace }}"
+        namespace: "{{ k8s_namespace }}"
       register: rabbitmq_state
       until:
         - rabbitmq_state.resources | length == 1
@@ -137,7 +274,7 @@
         api_version: apps/v1
         kind: Deployment
         name: db-worker-service
-        namespace: "{{ namespace }}"
+        namespace: "{{ k8s_namespace }}"
       register: worker_state
       until:
         - worker_state.resources | length == 1
@@ -157,7 +294,7 @@
         api_version: apps/v1
         kind: Deployment
         name: api-service
-        namespace: "{{ namespace }}"
+        namespace: "{{ k8s_namespace }}"
       register: api_state
       until:
         - api_state.resources | length == 1
