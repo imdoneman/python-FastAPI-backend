@@ -244,28 +244,35 @@ print(f"kubernetes.core {expected} is available.")
         // }
 
 
-        stage('Terraform Credential Diagnostic') {
+
+        stage('AWS Credential Diagnostic') {
             steps {
-                echo 'Checking AWS credential bindings...'
+                echo 'TEST 1: Bind AWS access-key credential'
 
                 withCredentials([
                     string(
                         credentialsId: 'aws-access-key-id',
-                        variable: 'AWS_ACCESS_KEY_ID'
-                    ),
-                    string(
-                        credentialsId: 'aws-secret-access_key',
-                        variable: 'AWS_SECRET_ACCESS_KEY'
+                        variable: 'TEST_AWS_ACCESS_KEY'
                     )
                 ]) {
-                    sh '''
-                        set +x
-                        echo "AWS access-key credential bound: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo YES || echo NO)"
-                        echo "AWS secret-key credential bound: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo YES || echo NO)"
-                    '''
+                    echo 'TEST 1 PASSED: Access-key credential bound'
                 }
+
+                echo 'TEST 2: Bind AWS secret-key credential'
+
+                withCredentials([
+                    string(
+                        credentialsId: 'aws-secret-access_key',
+                        variable: 'TEST_AWS_SECRET_KEY'
+                    )
+                ]) {
+                    echo 'TEST 2 PASSED: Secret-key credential bound'
+                }
+
+                echo 'TEST 3: Both credential-binding tests completed'
             }
         }
+
 
 
 
