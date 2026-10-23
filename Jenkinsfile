@@ -262,7 +262,7 @@ print(f"kubernetes.core {expected} is available.")
 
                 withCredentials([
                     string(
-                        credentialsId: 'aws-secret-access_key',
+                        credentialsId: 'aws-secret-access-key',
                         variable: 'TEST_AWS_SECRET_KEY'
                     )
                 ]) {
