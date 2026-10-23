@@ -194,8 +194,60 @@ print(f"kubernetes.core {expected} is available.")
         }
 
         
-        stage('Terraform Provisioning') {
+        // stage('Terraform Provisioning') {
+        //     steps {
+        //         withCredentials([
+        //             string(
+        //                 credentialsId: 'aws-access-key-id',
+        //                 variable: 'AWS_ACCESS_KEY_ID'
+        //             ),
+        //             string(
+        //                 credentialsId: 'aws-secret-access_key',
+        //                 variable: 'AWS_SECRET_ACCESS_KEY'
+        //             )
+        //         ]) {
+        //             dir('terraform') {
+        //                 sh '''
+        //                     set -eu
+        //                     set +x
+
+        //                     export AWS_DEFAULT_REGION="$AWS_REGION"
+
+        //                     echo "STEP 1: Checking AWS identity"
+        //                     aws sts get-caller-identity
+
+        //                     echo "STEP 2: Terraform version"
+        //                     terraform version
+
+        //                     echo "STEP 3: Initializing Terraform"
+        //                     terraform init -input=false -no-color
+
+        //                     echo "STEP 4: Validating Terraform"
+        //                     terraform validate -no-color
+
+        //                     echo "STEP 5: Checking local state"
+        //                     if [ -f terraform.tfstate ]; then
+        //                         echo "State file exists."
+        //                         terraform state list
+        //                     else
+        //                         echo "No local state file found."
+        //                     fi
+
+        //                     echo "STEP 6: Generating plan only"
+        //                     terraform plan \
+        //                         -input=false \
+        //                         -no-color
+        //                 '''
+        //             }
+        //         }
+        //     }
+        // }
+
+
+        stage('Terraform Credential Diagnostic') {
             steps {
+                echo 'Checking AWS credential bindings...'
+
                 withCredentials([
                     string(
                         credentialsId: 'aws-access-key-id',
@@ -206,39 +258,11 @@ print(f"kubernetes.core {expected} is available.")
                         variable: 'AWS_SECRET_ACCESS_KEY'
                     )
                 ]) {
-                    dir('terraform') {
-                        sh '''
-                            set -eu
-                            set +x
-
-                            export AWS_DEFAULT_REGION="$AWS_REGION"
-
-                            echo "STEP 1: Checking AWS identity"
-                            aws sts get-caller-identity
-
-                            echo "STEP 2: Terraform version"
-                            terraform version
-
-                            echo "STEP 3: Initializing Terraform"
-                            terraform init -input=false -no-color
-
-                            echo "STEP 4: Validating Terraform"
-                            terraform validate -no-color
-
-                            echo "STEP 5: Checking local state"
-                            if [ -f terraform.tfstate ]; then
-                                echo "State file exists."
-                                terraform state list
-                            else
-                                echo "No local state file found."
-                            fi
-
-                            echo "STEP 6: Generating plan only"
-                            terraform plan \
-                                -input=false \
-                                -no-color
-                        '''
-                    }
+                    sh '''
+                        set +x
+                        echo "AWS access-key credential bound: $([ -n "$AWS_ACCESS_KEY_ID" ] && echo YES || echo NO)"
+                        echo "AWS secret-key credential bound: $([ -n "$AWS_SECRET_ACCESS_KEY" ] && echo YES || echo NO)"
+                    '''
                 }
             }
         }
