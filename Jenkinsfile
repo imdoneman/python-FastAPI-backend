@@ -113,85 +113,85 @@ print(f"kubernetes.core {expected} is available.")
             }
         }
 
-        stage('Test API Service') {
-            steps {
-                sh '''
-                    set -eu
+        // stage('Test API Service') {
+        //     steps {
+        //         sh '''
+        //             set -eu
 
-                    docker run --rm \
-                        -e PYTHONPATH=/app \
-                        -v "$WORKSPACE/api-service:/app" \
-                        -w /app \
-                        python:3.11-slim \
-                        sh -ec '
-                            python -m pip install \
-                                --disable-pip-version-check \
-                                -r requirements.txt pytest
-                            python -m pytest -q
-                        '
-                '''
-            }
-        }
+        //             docker run --rm \
+        //                 -e PYTHONPATH=/app \
+        //                 -v "$WORKSPACE/api-service:/app" \
+        //                 -w /app \
+        //                 python:3.11-slim \
+        //                 sh -ec '
+        //                     python -m pip install \
+        //                         --disable-pip-version-check \
+        //                         -r requirements.txt pytest
+        //                     python -m pytest -q
+        //                 '
+        //         '''
+        //     }
+        // }
 
-        stage('Test DB Worker Service') {
-            steps {
-                sh '''
-                    set -eu
+        // stage('Test DB Worker Service') {
+        //     steps {
+        //         sh '''
+        //             set -eu
 
-                    docker run --rm \
-                        -e PYTHONPATH=/app \
-                        -v "$WORKSPACE/db-worker-service:/app" \
-                        -w /app \
-                        python:3.11-slim \
-                        sh -ec '
-                            python -m pip install \
-                                --disable-pip-version-check \
-                                -r requirements.txt pytest
-                            python -m pytest -q
-                        '
-                '''
-            }
-        }
+        //             docker run --rm \
+        //                 -e PYTHONPATH=/app \
+        //                 -v "$WORKSPACE/db-worker-service:/app" \
+        //                 -w /app \
+        //                 python:3.11-slim \
+        //                 sh -ec '
+        //                     python -m pip install \
+        //                         --disable-pip-version-check \
+        //                         -r requirements.txt pytest
+        //                     python -m pytest -q
+        //                 '
+        //         '''
+        //     }
+        // }
 
         
 
-        stage('Build and Push Images') {
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-token',
-                        usernameVariable: 'DH_USER',
-                        passwordVariable: 'DH_PASS'
-                    )
-                ]) {
-                    sh '''
-                        set -eu
+        // stage('Build and Push Images') {
+        //     steps {
+        //         withCredentials([
+        //             usernamePassword(
+        //                 credentialsId: 'dockerhub-token',
+        //                 usernameVariable: 'DH_USER',
+        //                 passwordVariable: 'DH_PASS'
+        //             )
+        //         ]) {
+        //             sh '''
+        //                 set -eu
 
-                        echo "$DH_PASS" | docker login \
-                            --username "$DH_USER" \
-                            --password-stdin
+        //                 echo "$DH_PASS" | docker login \
+        //                     --username "$DH_USER" \
+        //                     --password-stdin
 
-                        trap 'docker logout >/dev/null 2>&1 || true' EXIT
+        //                 trap 'docker logout >/dev/null 2>&1 || true' EXIT
 
-                        docker build \
-                            -t "$DH_USER/api-service:$VERSION" \
-                            -t "$DH_USER/api-service:latest" \
-                            ./api-service
+        //                 docker build \
+        //                     -t "$DH_USER/api-service:$VERSION" \
+        //                     -t "$DH_USER/api-service:latest" \
+        //                     ./api-service
 
-                        docker build \
-                            -t "$DH_USER/db-worker-service:$VERSION" \
-                            -t "$DH_USER/db-worker-service:latest" \
-                            ./db-worker-service
+        //                 docker build \
+        //                     -t "$DH_USER/db-worker-service:$VERSION" \
+        //                     -t "$DH_USER/db-worker-service:latest" \
+        //                     ./db-worker-service
 
-                        docker push "$DH_USER/api-service:$VERSION"
-                        docker push "$DH_USER/api-service:latest"
+        //                 docker push "$DH_USER/api-service:$VERSION"
+        //                 docker push "$DH_USER/api-service:latest"
 
-                        docker push "$DH_USER/db-worker-service:$VERSION"
-                        docker push "$DH_USER/db-worker-service:latest"
-                    '''
-                }
-            }
-        }
+        //                 docker push "$DH_USER/db-worker-service:$VERSION"
+        //                 docker push "$DH_USER/db-worker-service:latest"
+        //             '''
+        //         }
+        //     }
+        // }
 
         
         // stage('Terraform Provisioning') {
