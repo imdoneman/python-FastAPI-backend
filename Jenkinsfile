@@ -243,37 +243,35 @@ print(f"kubernetes.core {expected} is available.")
         //     }
         // }
 
-
-
-        stage('AWS Credential Diagnostic') {
+        stage('Terraform Shell Diagnostic') {
             steps {
-                echo 'TEST 1: Bind AWS access-key credential'
-
                 withCredentials([
                     string(
                         credentialsId: 'aws-access-key-id',
-                        variable: 'TEST_AWS_ACCESS_KEY'
-                    )
-                ]) {
-                    echo 'TEST 1 PASSED: Access-key credential bound'
-                }
-
-                echo 'TEST 2: Bind AWS secret-key credential'
-
-                withCredentials([
+                        variable: 'AWS_ACCESS_KEY_ID'
+                    ),
                     string(
-                        credentialsId: 'aws-secret-access-key',
-                        variable: 'TEST_AWS_SECRET_KEY'
+                        credentialsId: 'aws-secret-access_key',
+                        variable: 'AWS_SECRET_ACCESS_KEY'
                     )
                 ]) {
-                    echo 'TEST 2 PASSED: Secret-key credential bound'
-                }
+                    echo 'TEST 1: Credentials bound'
 
-                echo 'TEST 3: Both credential-binding tests completed'
+                    sh '''
+                        set +x
+                        echo "TEST 2: Shell started"
+                        echo "TEST 3: Terraform directory"
+                        pwd
+                        cd terraform
+                        echo "TEST 4: Terraform version"
+                        terraform version
+                        echo "TEST 5: Shell completed"
+                    '''
+
+                    echo 'TEST 6: Shell step returned successfully'
+                }
             }
         }
-
-
 
 
         stage('Deploy and Verify') {
