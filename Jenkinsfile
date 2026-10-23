@@ -213,30 +213,38 @@ print(f"kubernetes.core {expected} is available.")
 
                             export AWS_DEFAULT_REGION="$AWS_REGION"
 
-                            echo "STEP 1: Checking AWS identity"
+                            echo "Verifying AWS identity..."
                             aws sts get-caller-identity
 
-                            echo "STEP 2: Terraform version"
-                            terraform version
+                            echo "Initializing Terraform..."
+                            terraform init -input=false
 
-                            echo "STEP 3: Initializing Terraform"
-                            terraform init -input=false -no-color
+                            echo "Validating Terraform configuration..."
+                            terraform validate
 
-                            echo "STEP 4: Validating Terraform"
-                            terraform validate -no-color
-
-                            echo "STEP 5: Checking local state"
+                            echo "Checking Terraform state..."
                             if [ -f terraform.tfstate ]; then
-                                echo "State file exists."
+                                echo "Local Terraform state found."
                                 terraform state list
                             else
-                                echo "No local state file found."
+                                echo "No local Terraform state file found."
+                                echo "Terraform will plan from the current state."
                             fi
 
-                            echo "STEP 6: Generating plan only"
+                            echo "Generating Terraform plan..."
                             terraform plan \
                                 -input=false \
-                                -no-color
+                                -out=tfplan
+
+                            echo "Applying Terraform plan..."
+                            terraform apply \
+                                -input=false \
+                                -auto-approve \
+                                tfplan
+
+                            rm -f tfplan
+
+                            echo "Terraform provisioning completed."
                         '''
                     }
                 }
