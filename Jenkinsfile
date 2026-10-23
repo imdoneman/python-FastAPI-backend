@@ -10,7 +10,6 @@ pipeline {
     environment {
         AWS_REGION       = 'ap-south-1'
         EKS_CLUSTER_NAME = 'tea-house-eks'
-        DEPLOY_VENV      = '/var/lib/jenkins/venvs/tea-house-deploy'
     }
 
     stages {
@@ -39,20 +38,19 @@ pipeline {
                 sh '''
                     set -eu
 
-                    export PATH="$DEPLOY_VENV/bin:$PATH"
-
-                    test -x "$DEPLOY_VENV/bin/ansible-playbook"
-                    test -x "$DEPLOY_VENV/bin/ansible-galaxy"
-                    test -x "$DEPLOY_VENV/bin/python"
+                    echo "Checking Ansible..."
+                    command -v ansible-playbook
+                    command -v ansible-galaxy
+                    command -v python3
 
                     ansible-playbook --version
-                    python -m pip check
 
-                    python -c \
-                      "import kubernetes, yaml, jsonpatch"
+                    echo "Checking Python dependencies..."
+                    /usr/bin/python3 -c \
+                        "import kubernetes, yaml, jsonpatch"
 
                     EXPECTED_VERSION="$(
-                        python -c '
+                        /usr/bin/python3 -c '
 import yaml
 
 with open("ansible/requirements.yml", encoding="utf-8") as f:
@@ -79,7 +77,7 @@ print(matches[0]["version"])
 
                     EXPECTED_VERSION="$EXPECTED_VERSION" \
                     COLLECTION_LIST="collection-list.txt" \
-                    python -c '
+                    /usr/bin/python3 -c '
 import os
 from pathlib import Path
 
@@ -102,9 +100,11 @@ if not installed:
 print(f"kubernetes.core {expected} is available.")
 '
 
+                    echo "Checking required tools..."
                     command -v docker
                     command -v aws
                     command -v kubectl
+                    command -v curl
 
                     docker info >/dev/null
 
@@ -230,7 +230,6 @@ print(f"kubernetes.core {expected} is available.")
                         set -eu
                         set +x
 
-                        export PATH="$DEPLOY_VENV/bin:$PATH"
                         export AWS_DEFAULT_REGION="$AWS_REGION"
 
                         echo "Verifying AWS identity..."
@@ -243,10 +242,10 @@ print(f"kubernetes.core {expected} is available.")
 
                         kubectl cluster-info
 
-                        # Construct the RabbitMQ URL using URL-encoded
-                        # credentials. Do not print this URL.
+                        # Construct the RabbitMQ URL with URL-encoded
+                        # credentials. Never print this URL.
                         export RABBITMQ_URL="$(
-                            python -c '
+                            /usr/bin/python3 -c '
 import os
 from urllib.parse import quote
 
@@ -265,7 +264,7 @@ print(
 
                         echo "Deploying API and worker version $VERSION"
 
-                        ansible-playbook \
+                        /usr/bin/ansible-playbook \
                             -i localhost, \
                             ansible/deploy-k8s.yml \
                             -e "api_image=$API_IMAGE" \
@@ -329,14 +328,16 @@ print(
                         )"
 
                         printf '%s\\n' "$RESPONSE" |
-                            python -c '
+                            /usr/bin/python3 -c '
 import json
 import sys
 
 data = json.load(sys.stdin)
 
 if data.get("status") != "online":
-    raise SystemExit(f"Unexpected health response: {data}")
+    raise SystemExit(
+        f"Unexpected health response: {data}"
+    )
 
 print("Public API health check passed.")
 '
