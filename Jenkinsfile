@@ -193,6 +193,7 @@ print(f"kubernetes.core {expected} is available.")
             }
         }
 
+        
         stage('Terraform Provisioning') {
             steps {
                 withCredentials([
@@ -212,43 +213,36 @@ print(f"kubernetes.core {expected} is available.")
 
                             export AWS_DEFAULT_REGION="$AWS_REGION"
 
-                            echo "Verifying AWS identity..."
+                            echo "STEP 1: Checking AWS identity"
                             aws sts get-caller-identity
 
-                            echo "Initializing Terraform..."
-                            terraform init -input=false
+                            echo "STEP 2: Terraform version"
+                            terraform version
 
-                            echo "Validating Terraform configuration..."
-                            terraform validate
+                            echo "STEP 3: Initializing Terraform"
+                            terraform init -input=false -no-color
 
-                            echo "Checking Terraform state..."
+                            echo "STEP 4: Validating Terraform"
+                            terraform validate -no-color
+
+                            echo "STEP 5: Checking local state"
                             if [ -f terraform.tfstate ]; then
-                                echo "Local Terraform state found."
+                                echo "State file exists."
                                 terraform state list
                             else
-                                echo "No local Terraform state file found."
-                                echo "Terraform will plan from the current state."
+                                echo "No local state file found."
                             fi
 
-                            echo "Generating Terraform plan..."
+                            echo "STEP 6: Generating plan only"
                             terraform plan \
                                 -input=false \
-                                -out=tfplan
-
-                            echo "Applying Terraform plan..."
-                            terraform apply \
-                                -input=false \
-                                -auto-approve \
-                                tfplan
-
-                            rm -f tfplan
-
-                            echo "Terraform provisioning completed."
+                                -no-color
                         '''
                     }
                 }
             }
         }
+
 
         stage('Deploy and Verify') {
             steps {
