@@ -113,135 +113,85 @@ print(f"kubernetes.core {expected} is available.")
             }
         }
 
-        // stage('Test API Service') {
-        //     steps {
-        //         sh '''
-        //             set -eu
+        stage('Test API Service') {
+            steps {
+                sh '''
+                    set -eu
 
-        //             docker run --rm \
-        //                 -e PYTHONPATH=/app \
-        //                 -v "$WORKSPACE/api-service:/app" \
-        //                 -w /app \
-        //                 python:3.11-slim \
-        //                 sh -ec '
-        //                     python -m pip install \
-        //                         --disable-pip-version-check \
-        //                         -r requirements.txt pytest
-        //                     python -m pytest -q
-        //                 '
-        //         '''
-        //     }
-        // }
+                    docker run --rm \
+                        -e PYTHONPATH=/app \
+                        -v "$WORKSPACE/api-service:/app" \
+                        -w /app \
+                        python:3.11-slim \
+                        sh -ec '
+                            python -m pip install \
+                                --disable-pip-version-check \
+                                -r requirements.txt pytest
+                            python -m pytest -q
+                        '
+                '''
+            }
+        }
 
-        // stage('Test DB Worker Service') {
-        //     steps {
-        //         sh '''
-        //             set -eu
+        stage('Test DB Worker Service') {
+            steps {
+                sh '''
+                    set -eu
 
-        //             docker run --rm \
-        //                 -e PYTHONPATH=/app \
-        //                 -v "$WORKSPACE/db-worker-service:/app" \
-        //                 -w /app \
-        //                 python:3.11-slim \
-        //                 sh -ec '
-        //                     python -m pip install \
-        //                         --disable-pip-version-check \
-        //                         -r requirements.txt pytest
-        //                     python -m pytest -q
-        //                 '
-        //         '''
-        //     }
-        // }
-
-        
-
-        // stage('Build and Push Images') {
-        //     steps {
-        //         withCredentials([
-        //             usernamePassword(
-        //                 credentialsId: 'dockerhub-token',
-        //                 usernameVariable: 'DH_USER',
-        //                 passwordVariable: 'DH_PASS'
-        //             )
-        //         ]) {
-        //             sh '''
-        //                 set -eu
-
-        //                 echo "$DH_PASS" | docker login \
-        //                     --username "$DH_USER" \
-        //                     --password-stdin
-
-        //                 trap 'docker logout >/dev/null 2>&1 || true' EXIT
-
-        //                 docker build \
-        //                     -t "$DH_USER/api-service:$VERSION" \
-        //                     -t "$DH_USER/api-service:latest" \
-        //                     ./api-service
-
-        //                 docker build \
-        //                     -t "$DH_USER/db-worker-service:$VERSION" \
-        //                     -t "$DH_USER/db-worker-service:latest" \
-        //                     ./db-worker-service
-
-        //                 docker push "$DH_USER/api-service:$VERSION"
-        //                 docker push "$DH_USER/api-service:latest"
-
-        //                 docker push "$DH_USER/db-worker-service:$VERSION"
-        //                 docker push "$DH_USER/db-worker-service:latest"
-        //             '''
-        //         }
-        //     }
-        // }
+                    docker run --rm \
+                        -e PYTHONPATH=/app \
+                        -v "$WORKSPACE/db-worker-service:/app" \
+                        -w /app \
+                        python:3.11-slim \
+                        sh -ec '
+                            python -m pip install \
+                                --disable-pip-version-check \
+                                -r requirements.txt pytest
+                            python -m pytest -q
+                        '
+                '''
+            }
+        }
 
         
-        // stage('Terraform Provisioning') {
-        //     steps {
-        //         withCredentials([
-        //             string(
-        //                 credentialsId: 'aws-access-key-id',
-        //                 variable: 'AWS_ACCESS_KEY_ID'
-        //             ),
-        //             string(
-        //                 credentialsId: 'aws-secret-access_key',
-        //                 variable: 'AWS_SECRET_ACCESS_KEY'
-        //             )
-        //         ]) {
-        //             dir('terraform') {
-        //                 sh '''
-        //                     set -eu
-        //                     set +x
 
-        //                     export AWS_DEFAULT_REGION="$AWS_REGION"
+        stage('Build and Push Images') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-token',
+                        usernameVariable: 'DH_USER',
+                        passwordVariable: 'DH_PASS'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
 
-        //                     echo "STEP 1: Checking AWS identity"
-        //                     aws sts get-caller-identity
+                        echo "$DH_PASS" | docker login \
+                            --username "$DH_USER" \
+                            --password-stdin
 
-        //                     echo "STEP 2: Terraform version"
-        //                     terraform version
+                        trap 'docker logout >/dev/null 2>&1 || true' EXIT
 
-        //                     echo "STEP 3: Initializing Terraform"
-        //                     terraform init -input=false -no-color
+                        docker build \
+                            -t "$DH_USER/api-service:$VERSION" \
+                            -t "$DH_USER/api-service:latest" \
+                            ./api-service
 
-        //                     echo "STEP 4: Validating Terraform"
-        //                     terraform validate -no-color
+                        docker build \
+                            -t "$DH_USER/db-worker-service:$VERSION" \
+                            -t "$DH_USER/db-worker-service:latest" \
+                            ./db-worker-service
 
-        //                     echo "STEP 5: Checking local state"
-        //                     if [ -f terraform.tfstate ]; then
-        //                         echo "State file exists."
-        //                         terraform state list
-        //                     else
-        //                         echo "No local state file found."
-        //                     fi
+                        docker push "$DH_USER/api-service:$VERSION"
+                        docker push "$DH_USER/api-service:latest"
 
-        //                     echo "STEP 6: Generating plan only"
-        //                     terraform plan \
-        //                         -input=false \
-        //                         -no-color
-        //                 '''
-        //             }
-        //         }
-        //     }
-        // }
+                        docker push "$DH_USER/db-worker-service:$VERSION"
+                        docker push "$DH_USER/db-worker-service:latest"
+                    '''
+                }
+            }
+        }
 
         
         stage('Terraform Provisioning') {
@@ -263,38 +213,37 @@ print(f"kubernetes.core {expected} is available.")
 
                             export AWS_DEFAULT_REGION="$AWS_REGION"
 
-                            echo "STEP 1: AWS identity"
+                            echo "STEP 1: Checking AWS identity"
                             aws sts get-caller-identity
 
                             echo "STEP 2: Terraform version"
                             terraform version
 
-                            echo "STEP 3: Terraform initialization"
+                            echo "STEP 3: Initializing Terraform"
                             terraform init -input=false -no-color
 
-                            echo "STEP 4: Terraform validation"
+                            echo "STEP 4: Validating Terraform"
                             terraform validate -no-color
 
-                            echo "STEP 5: Terraform state"
+                            echo "STEP 5: Checking local state"
                             if [ -f terraform.tfstate ]; then
-                                echo "Local state file exists."
+                                echo "State file exists."
                                 terraform state list
                             else
                                 echo "No local state file found."
                             fi
 
-                            echo "STEP 6: Terraform plan (no apply)"
-                            terraform plan -input=false -no-color
-
-                            echo "STEP 7: Diagnostic completed"
+                            echo "STEP 6: Generating plan only"
+                            terraform plan \
+                                -input=false \
+                                -no-color
                         '''
                     }
                 }
             }
         }
 
-
-
+   
 
         stage('Deploy and Verify') {
             steps {
