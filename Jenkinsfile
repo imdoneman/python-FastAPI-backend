@@ -113,12 +113,14 @@ print(f"kubernetes.core {expected} is available.")
             }
         }
 
+        
         stage('Test API Service') {
             steps {
                 sh '''
                     set -eu
 
                     docker run --rm \
+                        -e PYTHONPATH=/app \
                         -v "$WORKSPACE/api-service:/app" \
                         -w /app \
                         python:3.11-slim \
@@ -132,12 +134,14 @@ print(f"kubernetes.core {expected} is available.")
             }
         }
 
+
         stage('Test DB Worker Service') {
             steps {
                 sh '''
                     set -eu
 
                     docker run --rm \
+                        -e PYTHONPATH=/app \
                         -v "$WORKSPACE/db-worker-service:/app" \
                         -w /app \
                         python:3.11-slim \
