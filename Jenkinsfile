@@ -194,51 +194,72 @@ print(f"kubernetes.core {expected} is available.")
         }
 
         
+        // stage('Terraform Provisioning') {
+        //     steps {
+        //         withCredentials([
+        //             string(
+        //                 credentialsId: 'aws-access-key-id',
+        //                 variable: 'AWS_ACCESS_KEY_ID'
+        //             ),
+        //             string(
+        //                 credentialsId: 'aws-secret-access_key',
+        //                 variable: 'AWS_SECRET_ACCESS_KEY'
+        //             )
+        //         ]) {
+        //             dir('terraform') {
+        //                 sh '''
+        //                     set -eu
+        //                     set +x
+
+        //                     export AWS_DEFAULT_REGION="$AWS_REGION"
+
+        //                     echo "STEP 1: Checking AWS identity"
+        //                     aws sts get-caller-identity
+
+        //                     echo "STEP 2: Terraform version"
+        //                     terraform version
+
+        //                     echo "STEP 3: Initializing Terraform"
+        //                     terraform init -input=false -no-color
+
+        //                     echo "STEP 4: Validating Terraform"
+        //                     terraform validate -no-color
+
+        //                     echo "STEP 5: Checking local state"
+        //                     if [ -f terraform.tfstate ]; then
+        //                         echo "State file exists."
+        //                         terraform state list
+        //                     else
+        //                         echo "No local state file found."
+        //                     fi
+
+        //                     echo "STEP 6: Generating plan only"
+        //                     terraform plan \
+        //                         -input=false \
+        //                         -no-color
+        //                 '''
+        //             }
+        //         }
+        //     }
+        // }
+
         stage('Terraform Provisioning') {
             steps {
-                withCredentials([
-                    string(
-                        credentialsId: 'aws-access-key-id',
-                        variable: 'AWS_ACCESS_KEY_ID'
-                    ),
-                    string(
-                        credentialsId: 'aws-secret-access_key',
-                        variable: 'AWS_SECRET_ACCESS_KEY'
-                    )
-                ]) {
-                    dir('terraform') {
-                        sh '''
-                            set -eu
-                            set +x
+                script {
+                    echo 'TERRAFORM DIAGNOSTIC: stage entered'
+                }
 
-                            export AWS_DEFAULT_REGION="$AWS_REGION"
-
-                            echo "STEP 1: Checking AWS identity"
-                            aws sts get-caller-identity
-
-                            echo "STEP 2: Terraform version"
-                            terraform version
-
-                            echo "STEP 3: Initializing Terraform"
-                            terraform init -input=false -no-color
-
-                            echo "STEP 4: Validating Terraform"
-                            terraform validate -no-color
-
-                            echo "STEP 5: Checking local state"
-                            if [ -f terraform.tfstate ]; then
-                                echo "State file exists."
-                                terraform state list
-                            else
-                                echo "No local state file found."
-                            fi
-
-                            echo "STEP 6: Generating plan only"
-                            terraform plan \
-                                -input=false \
-                                -no-color
-                        '''
-                    }
+                dir('terraform') {
+                    sh '''
+                        set +e
+                        echo "TERRAFORM DIAGNOSTIC: shell started"
+                        echo "Workspace: $WORKSPACE"
+                        echo "Current directory: $(pwd)"
+                        echo "Terraform executable: $(command -v terraform)"
+                        terraform version
+                        echo "Shell exit code: $?"
+                        exit 0
+                    '''
                 }
             }
         }
