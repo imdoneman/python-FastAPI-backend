@@ -244,37 +244,55 @@ print(f"kubernetes.core {expected} is available.")
         // }
 
         
-        stage('Terraform Shell Diagnostic') {
+        stage('Terraform Provisioning') {
             steps {
-                echo 'MARKER A: Stage entered'
-
                 withCredentials([
                     string(
                         credentialsId: 'aws-access-key-id',
-                        variable: 'TEST_AWS_ACCESS_KEY'
-                    )
-                ]) {
-                    echo 'MARKER B: Access credential bound'
-                    sh 'echo "MARKER C: Shell executed"'
-                    echo 'MARKER D: Shell returned'
-                }
-
-                echo 'MARKER E: Access credential scope ended'
-
-                withCredentials([
+                        variable: 'AWS_ACCESS_KEY_ID'
+                    ),
                     string(
-                        credentialsId: 'aws-secret-access-key',
-                        variable: 'TEST_AWS_SECRET_KEY'
+                        credentialsId: 'aws-secret-access_key',
+                        variable: 'AWS_SECRET_ACCESS_KEY'
                     )
                 ]) {
-                    echo 'MARKER F: Secret credential bound'
-                    sh 'echo "MARKER G: Second shell executed"'
-                    echo 'MARKER H: Second shell returned'
-                }
+                    dir('terraform') {
+                        sh '''
+                            set -eu
+                            set +x
 
-                echo 'MARKER I: Diagnostic completed'
+                            export AWS_DEFAULT_REGION="$AWS_REGION"
+
+                            echo "STEP 1: AWS identity"
+                            aws sts get-caller-identity
+
+                            echo "STEP 2: Terraform version"
+                            terraform version
+
+                            echo "STEP 3: Terraform initialization"
+                            terraform init -input=false -no-color
+
+                            echo "STEP 4: Terraform validation"
+                            terraform validate -no-color
+
+                            echo "STEP 5: Terraform state"
+                            if [ -f terraform.tfstate ]; then
+                                echo "Local state file exists."
+                                terraform state list
+                            else
+                                echo "No local state file found."
+                            fi
+
+                            echo "STEP 6: Terraform plan (no apply)"
+                            terraform plan -input=false -no-color
+
+                            echo "STEP 7: Diagnostic completed"
+                        '''
+                    }
+                }
             }
         }
+
 
 
 
