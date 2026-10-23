@@ -1,95 +1,364 @@
+
 pipeline {
     agent any
 
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
     environment {
-        DOCKER_USER = "${env.GLOBAL_DOCKER_USER}"
-        AWS_REGION      = 'ap-south-1'
-        CLUSTER_NAME    = 'practice-tea-cluster'
-        
-        DOCKER_CREDS    = credentials('dockerhub-token')
+        AWS_REGION       = 'ap-south-1'
+        EKS_CLUSTER_NAME = 'tea-house-eks'
+        DEPLOY_VENV      = '/var/lib/jenkins/venvs/tea-house-deploy'
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'iteration-3-rabbitmq',
-                    url: 'https://github.com/imdoneman/python-FastAPI-backend.git'
-            }
-        }
+                checkout scm
 
-        stage('Determine Version') {
-            steps {
                 script {
-                    // Read the file from the codebase and strip any invisible newline characters
-                    def codeVersion = readFile('VERSION').trim()
-                    
-                    // Inject the dynamic tag globally into the Jenkins environment
-                    env.IMAGE_TAG = "v${codeVersion}-${env.BUILD_NUMBER}"
-                    
-                    echo "Locked in dynamic deployment tag: ${env.IMAGE_TAG}"
-                }
-            }
-        }
-
-        stage('Unit Testing') {
-            steps {
-                echo 'Executing pytest suites inside isolated environments...'
-                dir('api-service') {
-                    // Shifting execution inside standard test blocks
-                    echo 'Running API Tests'
-                }
-                dir('db-worker-service') {
-                    echo 'Running Worker Tests'
-                }
-            }
-        }
-
-        stage('Container Compilation') {
-            steps {
-                echo 'Building optimized slim Docker images...'
-                script {
-                    sh "docker build -t ${DOCKER_USER}/api-service:${env.IMAGE_TAG} ./api-service"
-                    sh "docker build -t ${DOCKER_USER}/api-service:latest ./api-service"
-                    
-                    sh "docker build -t ${DOCKER_USER}/db-worker-service:${env.IMAGE_TAG} ./db-worker-service"
-                    sh "docker build -t ${DOCKER_USER}/db-worker-service:latest ./db-worker-service"
-                }
-            }
-        }
-
-        stage('Registry Registry Push') {
-            steps {
-                echo 'Authenticating and moving images to central repository...'
-                script {
-                    sh "echo ${DOCKER_CREDS_PSW} | docker login -u ${DOCKER_CREDS_USR} --password-stdin"
-                    sh "docker push ${DOCKER_USER}/api-service:${env.IMAGE_TAG}"
-                    sh "docker push ${DOCKER_USER}/api-service:latest"
-                    sh "docker push ${DOCKER_USER}/db-worker-service:${env.IMAGE_TAG}"
-                    sh "docker push ${DOCKER_USER}/db-worker-service:latest"
-                }
-            }
-        }
-
-        stage('Infrastructure Sync & Deploy') {
-            steps {
-                echo 'Updating Kubeconfig context and executing Ansible Playbook...'
-                script {
-                    // Authenticates your local kubectl runner context against AWS EKS
-                    sh "aws eks update-kubeconfig --region ${AWS_REGION} --name ${CLUSTER_NAME}"
-                    
-                    // Executes Ansible playbook to apply manifests safely
-                    dir('ansible') {
-                        sh "ansible-playbook deploy-k8s.yml"
+                    if (!fileExists('VERSION')) {
+                        error('VERSION file is missing.')
                     }
+
+                    env.VERSION = readFile('VERSION').trim()
+
+                    if (!(env.VERSION ==~ /^\d+\.\d+\.\d+$/)) {
+                        error("Invalid VERSION: ${env.VERSION}")
+                    }
+
+                    echo "Tea House version: ${env.VERSION}"
+                }
+            }
+        }
+
+        stage('Preflight') {
+            steps {
+                sh '''
+                    set -eu
+
+                    export PATH="$DEPLOY_VENV/bin:$PATH"
+
+                    test -x "$DEPLOY_VENV/bin/ansible-playbook"
+                    test -x "$DEPLOY_VENV/bin/ansible-galaxy"
+                    test -x "$DEPLOY_VENV/bin/python"
+
+                    ansible-playbook --version
+                    python -m pip check
+
+                    python -c \
+                      "import kubernetes, yaml, jsonpatch"
+
+                    EXPECTED_VERSION="$(
+                        python -c '
+import yaml
+
+with open("ansible/requirements.yml", encoding="utf-8") as f:
+    data = yaml.safe_load(f)
+
+matches = [
+    item for item in data.get("collections", [])
+    if item.get("name") == "kubernetes.core"
+]
+
+if len(matches) != 1 or not matches[0].get("version"):
+    raise SystemExit(
+        "Pin exactly one kubernetes.core version in requirements.yml"
+    )
+
+print(matches[0]["version"])
+'
+                    )"
+
+                    ansible-galaxy collection list kubernetes.core \
+                        > collection-list.txt
+
+                    cat collection-list.txt
+
+                    EXPECTED_VERSION="$EXPECTED_VERSION" \
+                    COLLECTION_LIST="collection-list.txt" \
+                    python -c '
+import os
+from pathlib import Path
+
+expected = os.environ["EXPECTED_VERSION"]
+lines = Path(os.environ["COLLECTION_LIST"]).read_text().splitlines()
+
+installed = any(
+    len(parts := line.split()) >= 2
+    and parts[0] == "kubernetes.core"
+    and parts[1] == expected
+    for line in lines
+)
+
+if not installed:
+    raise SystemExit(
+        f"Required kubernetes.core {expected} is not installed. "
+        "Install it on the Jenkins host before deploying."
+    )
+
+print(f"kubernetes.core {expected} is available.")
+'
+
+                    command -v docker
+                    command -v aws
+                    command -v kubectl
+
+                    docker info >/dev/null
+
+                    echo "Preflight passed."
+                '''
+            }
+        }
+
+        stage('Test API Service') {
+            steps {
+                sh '''
+                    set -eu
+
+                    docker run --rm \
+                        -v "$WORKSPACE/api-service:/app" \
+                        -w /app \
+                        python:3.11-slim \
+                        sh -ec '
+                            python -m pip install \
+                                --disable-pip-version-check \
+                                -r requirements.txt pytest
+                            pytest -q
+                        '
+                '''
+            }
+        }
+
+        stage('Test DB Worker Service') {
+            steps {
+                sh '''
+                    set -eu
+
+                    docker run --rm \
+                        -v "$WORKSPACE/db-worker-service:/app" \
+                        -w /app \
+                        python:3.11-slim \
+                        sh -ec '
+                            python -m pip install \
+                                --disable-pip-version-check \
+                                -r requirements.txt pytest
+                            pytest -q
+                        '
+                '''
+            }
+        }
+
+        stage('Build and Push Images') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-token',
+                        usernameVariable: 'DH_USER',
+                        passwordVariable: 'DH_PASS'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+
+                        echo "$DH_PASS" | docker login \
+                            --username "$DH_USER" \
+                            --password-stdin
+
+                        trap 'docker logout >/dev/null 2>&1 || true' EXIT
+
+                        docker build \
+                            -t "$DH_USER/api-service:$VERSION" \
+                            -t "$DH_USER/api-service:latest" \
+                            ./api-service
+
+                        docker build \
+                            -t "$DH_USER/db-worker-service:$VERSION" \
+                            -t "$DH_USER/db-worker-service:latest" \
+                            ./db-worker-service
+
+                        docker push "$DH_USER/api-service:$VERSION"
+                        docker push "$DH_USER/api-service:latest"
+
+                        docker push "$DH_USER/db-worker-service:$VERSION"
+                        docker push "$DH_USER/db-worker-service:latest"
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy and Verify') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-token',
+                        usernameVariable: 'DH_USER',
+                        passwordVariable: 'DH_PASS'
+                    ),
+                    string(
+                        credentialsId: 'aws-access-key-id',
+                        variable: 'AWS_ACCESS_KEY_ID'
+                    ),
+                    string(
+                        credentialsId: 'aws-secret-access_key',
+                        variable: 'AWS_SECRET_ACCESS_KEY'
+                    ),
+                    string(
+                        credentialsId: 'postgres-user',
+                        variable: 'POSTGRES_USER'
+                    ),
+                    string(
+                        credentialsId: 'postgres-password',
+                        variable: 'POSTGRES_PASSWORD'
+                    ),
+                    string(
+                        credentialsId: 'postgres-db',
+                        variable: 'POSTGRES_DB'
+                    ),
+                    string(
+                        credentialsId: 'rabbitmq-user',
+                        variable: 'RABBITMQ_USER'
+                    ),
+                    string(
+                        credentialsId: 'rabbitmq-password',
+                        variable: 'RABBITMQ_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                        set -eu
+                        set +x
+
+                        export PATH="$DEPLOY_VENV/bin:$PATH"
+                        export AWS_DEFAULT_REGION="$AWS_REGION"
+
+                        echo "Verifying AWS identity..."
+                        aws sts get-caller-identity
+
+                        echo "Configuring EKS access..."
+                        aws eks update-kubeconfig \
+                            --region "$AWS_REGION" \
+                            --name "$EKS_CLUSTER_NAME"
+
+                        kubectl cluster-info
+
+                        # Construct the RabbitMQ URL using URL-encoded
+                        # credentials. Do not print this URL.
+                        export RABBITMQ_URL="$(
+                            python -c '
+import os
+from urllib.parse import quote
+
+user = quote(os.environ["RABBITMQ_USER"], safe="")
+password = quote(os.environ["RABBITMQ_PASSWORD"], safe="")
+
+print(
+    f"amqp://{user}:{password}"
+    "@rabbitmq-service:5672/%2F"
+)
+'
+                        )"
+
+                        API_IMAGE="$DH_USER/api-service:$VERSION"
+                        WORKER_IMAGE="$DH_USER/db-worker-service:$VERSION"
+
+                        echo "Deploying API and worker version $VERSION"
+
+                        ansible-playbook \
+                            -i localhost, \
+                            ansible/deploy-k8s.yml \
+                            -e "api_image=$API_IMAGE" \
+                            -e "worker_image=$WORKER_IMAGE"
+
+                        echo "Waiting for API rollout..."
+                        kubectl rollout status \
+                            deployment/api-service \
+                            --timeout=300s
+
+                        echo "Waiting for worker rollout..."
+                        kubectl rollout status \
+                            deployment/db-worker-service \
+                            --timeout=300s
+
+                        echo "Waiting for LoadBalancer address..."
+
+                        API_HOST=""
+
+                        for attempt in $(seq 1 60); do
+                            API_HOST="$(
+                                kubectl get service api-service \
+                                    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+                            )"
+
+                            if [ -z "$API_HOST" ]; then
+                                API_HOST="$(
+                                    kubectl get service api-service \
+                                        -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+                                )"
+                            fi
+
+                            if [ -n "$API_HOST" ]; then
+                                break
+                            fi
+
+                            echo "Waiting for external address ($attempt/60)"
+                            sleep 5
+                        done
+
+                        if [ -z "$API_HOST" ]; then
+                            kubectl get service api-service
+                            echo "ERROR: LoadBalancer address was not assigned."
+                            exit 1
+                        fi
+
+                        API_URL="http://$API_HOST/pulse"
+
+                        echo "Checking external API health..."
+
+                        RESPONSE="$(
+                            curl \
+                                --fail \
+                                --show-error \
+                                --silent \
+                                --retry 12 \
+                                --retry-delay 5 \
+                                --retry-connrefused \
+                                --max-time 10 \
+                                "$API_URL"
+                        )"
+
+                        printf '%s\\n' "$RESPONSE" |
+                            python -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+
+if data.get("status") != "online":
+    raise SystemExit(f"Unexpected health response: {data}")
+
+print("Public API health check passed.")
+'
+
+                        echo "Tea House $VERSION deployed successfully."
+                    '''
                 }
             }
         }
     }
 
     post {
+        success {
+            echo "Deployment ${env.VERSION} succeeded."
+        }
+
+        failure {
+            echo 'Pipeline failed. Inspect the failed stage logs.'
+        }
+
         always {
-            echo 'Cleaning up worker node workspace environments...'
-            cleanWs()
+            echo 'Pipeline finished.'
         }
     }
 }
