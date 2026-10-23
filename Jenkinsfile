@@ -13,7 +13,6 @@ pipeline {
     }
 
     stages {
-        
         stage('Checkout') {
             steps {
                 checkout scm
@@ -26,7 +25,7 @@ pipeline {
                     def baseVersion = readFile('VERSION').trim()
 
                     if (!(baseVersion ==~ /^\d+\.\d+\.\d+$/)) {
-                        error("Invalid VERSION: ${baseVersion}. Expected format: 3.1.0")
+                        error("Invalid VERSION: ${baseVersion}")
                     }
 
                     env.BASE_VERSION = baseVersion
@@ -36,7 +35,6 @@ pipeline {
                 }
             }
         }
-
 
         stage('Preflight') {
             steps {
@@ -50,7 +48,6 @@ pipeline {
 
                     ansible-playbook --version
 
-                    echo "Checking Python dependencies..."
                     /usr/bin/python3 -c \
                         "import kubernetes, yaml, jsonpatch"
 
@@ -78,8 +75,6 @@ print(matches[0]["version"])
                     ansible-galaxy collection list kubernetes.core \
                         > collection-list.txt
 
-                    cat collection-list.txt
-
                     EXPECTED_VERSION="$EXPECTED_VERSION" \
                     COLLECTION_LIST="collection-list.txt" \
                     /usr/bin/python3 -c '
@@ -105,7 +100,7 @@ if not installed:
 print(f"kubernetes.core {expected} is available.")
 '
 
-                    echo "Checking required tools..."
+                    command -v terraform
                     command -v docker
                     command -v aws
                     command -v kubectl
@@ -118,7 +113,6 @@ print(f"kubernetes.core {expected} is available.")
             }
         }
 
-        
         stage('Test API Service') {
             steps {
                 sh '''
@@ -133,12 +127,11 @@ print(f"kubernetes.core {expected} is available.")
                             python -m pip install \
                                 --disable-pip-version-check \
                                 -r requirements.txt pytest
-                            pytest -q
+                            python -m pytest -q
                         '
                 '''
             }
         }
-
 
         stage('Test DB Worker Service') {
             steps {
@@ -154,11 +147,13 @@ print(f"kubernetes.core {expected} is available.")
                             python -m pip install \
                                 --disable-pip-version-check \
                                 -r requirements.txt pytest
-                            pytest -q
+                            python -m pytest -q
                         '
                 '''
             }
         }
+
+        
 
         stage('Build and Push Images') {
             steps {
@@ -198,6 +193,63 @@ print(f"kubernetes.core {expected} is available.")
             }
         }
 
+        stage('Terraform Provisioning') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'aws-access-key-id',
+                        variable: 'AWS_ACCESS_KEY_ID'
+                    ),
+                    string(
+                        credentialsId: 'aws-secret-access_key',
+                        variable: 'AWS_SECRET_ACCESS_KEY'
+                    )
+                ]) {
+                    dir('terraform') {
+                        sh '''
+                            set -eu
+                            set +x
+
+                            export AWS_DEFAULT_REGION="$AWS_REGION"
+
+                            echo "Verifying AWS identity..."
+                            aws sts get-caller-identity
+
+                            echo "Initializing Terraform..."
+                            terraform init -input=false
+
+                            echo "Validating Terraform configuration..."
+                            terraform validate
+
+                            echo "Checking Terraform state..."
+                            if [ -f terraform.tfstate ]; then
+                                echo "Local Terraform state found."
+                                terraform state list
+                            else
+                                echo "No local Terraform state file found."
+                                echo "Terraform will plan from the current state."
+                            fi
+
+                            echo "Generating Terraform plan..."
+                            terraform plan \
+                                -input=false \
+                                -out=tfplan
+
+                            echo "Applying Terraform plan..."
+                            terraform apply \
+                                -input=false \
+                                -auto-approve \
+                                tfplan
+
+                            rm -f tfplan
+
+                            echo "Terraform provisioning completed."
+                        '''
+                    }
+                }
+            }
+        }
+
         stage('Deploy and Verify') {
             steps {
                 withCredentials([
@@ -211,7 +263,7 @@ print(f"kubernetes.core {expected} is available.")
                         variable: 'AWS_ACCESS_KEY_ID'
                     ),
                     string(
-                        credentialsId: 'aws-secret-access-key',
+                        credentialsId: 'aws-secret-access_key',
                         variable: 'AWS_SECRET_ACCESS_KEY'
                     ),
                     string(
@@ -251,8 +303,6 @@ print(f"kubernetes.core {expected} is available.")
 
                         kubectl cluster-info
 
-                        # Construct the RabbitMQ URL with URL-encoded
-                        # credentials. Never print this URL.
                         export RABBITMQ_URL="$(
                             /usr/bin/python3 -c '
 import os
@@ -271,7 +321,7 @@ print(
                         API_IMAGE="$DH_USER/api-service:$VERSION"
                         WORKER_IMAGE="$DH_USER/db-worker-service:$VERSION"
 
-                        echo "Deploying API and worker version $VERSION"
+                        echo "Deploying version $VERSION..."
 
                         /usr/bin/ansible-playbook \
                             -i localhost, \
