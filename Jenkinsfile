@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -105,6 +104,7 @@ print(f"kubernetes.core {expected} is available.")
                     command -v aws
                     command -v kubectl
                     command -v curl
+                    command -v getent
 
                     docker info >/dev/null
 
@@ -153,8 +153,6 @@ print(f"kubernetes.core {expected} is available.")
             }
         }
 
-        
-
         stage('Build and Push Images') {
             steps {
                 withCredentials([
@@ -193,7 +191,6 @@ print(f"kubernetes.core {expected} is available.")
             }
         }
 
-        
         stage('Terraform Provisioning') {
             steps {
                 withCredentials([
@@ -213,23 +210,35 @@ print(f"kubernetes.core {expected} is available.")
 
                             export AWS_DEFAULT_REGION="$AWS_REGION"
 
+                            echo "Verifying AWS identity..."
                             aws sts get-caller-identity
 
+                            echo "Initializing Terraform..."
                             terraform init -input=false
+
+                            echo "Validating Terraform configuration..."
                             terraform validate
 
+                            echo "Checking Terraform state..."
+                            if [ -f terraform.tfstate ]; then
+                                echo "Local Terraform state found."
+                                terraform state list
+                            else
+                                echo "ERROR: Local Terraform state file is missing."
+                                echo "Refusing to plan or apply without the expected state."
+                                exit 1
+                            fi
+
+                            echo "Generating Terraform plan..."
                             terraform plan \
                                 -input=false \
                                 -out=tfplan
 
-                            echo "Review the plan above for unexpected cluster replacement."
+                            echo "Applying Terraform plan..."
                             terraform apply \
                                 -input=false \
                                 -auto-approve \
                                 tfplan
-
-                            echo "Checking EBS CSI role output..."
-                            terraform output -raw ebs_csi_role_arn
 
                             rm -f tfplan
 
@@ -239,8 +248,6 @@ print(f"kubernetes.core {expected} is available.")
                 }
             }
         }
-
-   
 
         stage('Deploy and Verify') {
             steps {
@@ -284,16 +291,6 @@ print(f"kubernetes.core {expected} is available.")
                         set +x
 
                         export AWS_DEFAULT_REGION="$AWS_REGION"
-                        echo "Retrieving EBS CSI IAM role ARN from Terraform state..."
-
-                        export EBS_CSI_ROLE_ARN="$(
-                            terraform -chdir=terraform output -raw ebs_csi_role_arn
-                        )"
-
-                        if [ -z "$EBS_CSI_ROLE_ARN" ]; then
-                            echo "ERROR: Terraform returned an empty EBS CSI role ARN."
-                            exit 1
-                        fi  
 
                         echo "Verifying AWS identity..."
                         aws sts get-caller-identity
@@ -372,24 +369,28 @@ print(
                             exit 1
                         fi
 
-                        API_URL="http://$API_HOST/pulse"
+                        echo "LoadBalancer hostname: $API_HOST"
+
+                        API_URL="http://$API_HOST:8000/pulse"
 
                         echo "Checking external API health..."
+                        echo "Waiting for DNS resolution and API readiness..."
 
-                        RESPONSE="$(
-                            curl \
-                                --fail \
-                                --show-error \
-                                --silent \
-                                --retry 12 \
-                                --retry-delay 5 \
-                                --retry-connrefused \
-                                --max-time 10 \
-                                "$API_URL"
-                        )"
+                        RESPONSE=""
 
-                        printf '%s\\n' "$RESPONSE" |
-                            /usr/bin/python3 -c '
+                        for attempt in $(seq 1 60); do
+                            if getent hosts "$API_HOST" >/dev/null 2>&1; then
+                                if RESPONSE="$(
+                                    curl \
+                                        --fail \
+                                        --show-error \
+                                        --silent \
+                                        --connect-timeout 5 \
+                                        --max-time 10 \
+                                        "$API_URL" 2>/dev/null
+                                )"; then
+                                    if printf '%s\\n' "$RESPONSE" |
+                                        /usr/bin/python3 -c '
 import json
 import sys
 
@@ -399,9 +400,32 @@ if data.get("status") != "online":
     raise SystemExit(
         f"Unexpected health response: {data}"
     )
+'; then
+                                        echo "Public API health check passed."
+                                        break
+                                    fi
+                                fi
+                            fi
 
-print("Public API health check passed.")
-'
+                            RESPONSE=""
+                            echo "DNS or API not ready yet ($attempt/60)"
+                            sleep 5
+                        done
+
+                        if [ -z "$RESPONSE" ]; then
+                            echo "ERROR: API health check failed after retries."
+                            echo "LoadBalancer hostname: $API_HOST"
+                            echo "Checking DNS one final time..."
+                            getent hosts "$API_HOST" || true
+
+                            echo "Kubernetes Service status:"
+                            kubectl get service api-service -o wide
+
+                            echo "API pod status:"
+                            kubectl get pods -l app=api-service -o wide
+
+                            exit 1
+                        fi
 
                         echo "Tea House $VERSION deployed successfully."
                     '''
