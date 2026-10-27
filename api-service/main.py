@@ -1,95 +1,140 @@
+
 import time
+from typing import Annotated
+
 import httpx2
-from fastapi import FastAPI, HTTPException, status
-from typing import List
+from fastapi import FastAPI, HTTPException, Path, status
 from prometheus_fastapi_instrumentator import Instrumentator
 
-# 💡 Notice what is missing: Zero database imports. No SQLAlchemy. No engine.
+from producer import RabbitMQPublishError, publish_to_queue
 from schemas import TeaCreate, TeaResponse
-from producer import publish_to_queue
 
-app = FastAPI(openapi_url="/openapi.json", docs_url="/docs", redoc_url="/redoc")
+
+app = FastAPI(
+    openapi_url="/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+Instrumentator(excluded_handlers=["/metrics"]).instrument(app).expose(app, include_in_schema=False)
 
 start_time = time.time()
 
-# 💡 Internal DNS for the Kubernetes Service that actually touches the database
 INTERNAL_DB_SERVICE_URL = "http://db-worker-service:8080"
+WORKER_REQUEST_TIMEOUT = 5.0
 
-
-# =====================================================================
-# SYSTEM ROUTES
-# =====================================================================
 
 @app.get("/")
 def read_root():
     return {"message": "welcome to the distributed tea house"}
 
-# Initialize and expose the /metrics endpoint
-Instrumentator().instrument(app).expose(app)
 
 @app.get("/pulse")
 def pulse():
     return {
         "status": "online",
         "uptime": f"{int(time.time() - start_time)}s",
-        "version": "3.1.0" # Version bump for the pure microservice transition
+        "version": "3.1.0",
     }
 
 
-# =====================================================================
-# QUERIES (Reads): Fetched over the network from the DB Worker
-# =====================================================================
-
-@app.get("/teas", response_model=List[TeaResponse])
+@app.get("/teas", response_model=list[TeaResponse])
 async def home_teas():
-    # The API no longer touches the database! It asks the worker service for the data.
-    async with httpx2.AsyncClient() as client:
-        try:
-            response = await client.get(f"{INTERNAL_DB_SERVICE_URL}/internal/teas")
+    try:
+        async with httpx2.AsyncClient(
+            timeout=WORKER_REQUEST_TIMEOUT
+        ) as client:
+            response = await client.get(
+                f"{INTERNAL_DB_SERVICE_URL}/internal/teas"
+            )
             response.raise_for_status()
             return response.json()
-        except httpx2.RequestError:
-            # If the DB worker is offline, we handle the network failure gracefully
-            raise HTTPException(
-                status_code=503, 
-                detail="Database service is currently unreachable."
-            )
+
+    except httpx2.TimeoutException:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Database service request timed out.",
+        )
+
+    except httpx2.HTTPStatusError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Database service returned an unsuccessful response.",
+        )
+
+    except httpx2.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service is currently unreachable.",
+        )
 
 
-# =====================================================================
-# COMMANDS (Writes): Handed off to RabbitMQ (CQRS Pattern)
-# =====================================================================
+def publish_command(action: str, payload: dict | list) -> None:
+    """Publish a command or return an HTTP error if publishing fails."""
+    try:
+        publish_to_queue(action=action, payload=payload)
+    except RabbitMQPublishError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Message broker is currently unavailable. Please retry.",
+        )
+
 
 @app.post("/teas", status_code=status.HTTP_202_ACCEPTED)
 def add_teas(tea: TeaCreate):
-    # We no longer check for duplicates here. The DB Worker handles that logic.
-    publish_to_queue(action="create", payload=tea.model_dump())
-    
-    # We return 202 Accepted because the item isn't created yet, just queued.
-    return {"status": "Accepted", "message": f"Creation task for '{tea.name}' queued successfully."}
+    publish_command("create", tea.model_dump())
+
+    return {
+        "status": "Accepted",
+        "message": f"Creation task for '{tea.name}' queued successfully.",
+    }
 
 
 @app.post("/teas/bulk", status_code=status.HTTP_202_ACCEPTED)
-def add_multiple_teas(multiple_teas: List[TeaCreate]):
-    # Serialize the list of Pydantic models into native dictionaries
-    serialized_teas = [tea.model_dump() for tea in multiple_teas]
-    publish_to_queue(action="bulk_create", payload=serialized_teas)
-    
-    return {"status": "Accepted", "message": f"Bulk creation task for {len(serialized_teas)} items queued."}
+def add_multiple_teas(multiple_teas: list[TeaCreate]):
+    if not multiple_teas:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="At least one tea must be provided.",
+        )
+
+    serialized_teas = [
+        tea.model_dump() for tea in multiple_teas
+    ]
+
+    publish_command("bulk_create", serialized_teas)
+
+    return {
+        "status": "Accepted",
+        "message": (
+            f"Bulk creation task for {len(serialized_teas)} items queued."
+        ),
+    }
 
 
 @app.put("/teas/{tea_id}", status_code=status.HTTP_202_ACCEPTED)
-def update_teas(tea_id: int, updated_tea: TeaCreate):
+def update_teas(
+    tea_id: Annotated[int, Path(gt=0)],
+    updated_tea: TeaCreate,
+):
     payload = {
         "id": tea_id,
-        "update_data": updated_tea.model_dump()
+        "update_data": updated_tea.model_dump(),
     }
-    publish_to_queue(action="update", payload=payload)
-    
-    return {"status": "Accepted", "message": f"Update task for Tea ID {tea_id} queued."}
+
+    publish_command("update", payload)
+
+    return {
+        "status": "Accepted",
+        "message": f"Update task for Tea ID {tea_id} queued.",
+    }
 
 
 @app.delete("/teas/{tea_id}", status_code=status.HTTP_202_ACCEPTED)
-def delete_teas(tea_id: int):
-    publish_to_queue(action="delete", payload={"id": tea_id})
-    return {"status": "Accepted", "message": f"Deletion task for Tea ID {tea_id} queued."}
+def delete_teas(tea_id: Annotated[int, Path(gt=0)]):
+    publish_command("delete", {"id": tea_id})
+
+    return {
+        "status": "Accepted",
+        "message": f"Deletion task for Tea ID {tea_id} queued.",
+    }

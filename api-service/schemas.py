@@ -1,15 +1,28 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class TeaBase(BaseModel):
-    name: str = Field(..., description="The name of the tea", examples=["Matcha Green Tea"])
-    origin: str = Field(..., description="The country or region of origin", examples=["Japan"])
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="The name of the tea",
+        examples=["Matcha Green Tea"],
+    )
+    origin: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="The country or region of origin",
+        examples=["Japan"],
+    )
+
 
 class TeaCreate(TeaBase):
     pass
 
-class TeaResponse(TeaBase):
-    id: int
 
-class Config:
-    # Allows Pydantic to read SQLAlchemy ORM objects seamlessly
-    from_attributes = True
+class TeaResponse(TeaBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int

@@ -1,49 +1,77 @@
-import pika
 import json
 import os
 
-# Fetch the broker URL from the environment, defaulting to localhost for local dev
-RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+import pika
+
+
 QUEUE_NAME = "tea_tasks"
 
-def publish_to_queue(action: str, payload: dict | list):
-    """
-    Pushes a task to RabbitMQ to be asynchronously consumed by the DB Worker.
-    """
+
+class RabbitMQPublishError(RuntimeError):
+    """Raised when a command cannot be confirmed by RabbitMQ."""
+
+
+def _connection_parameters():
+    rabbitmq_url = os.getenv("RABBITMQ_URL")
+
+    if rabbitmq_url:
+        return pika.URLParameters(rabbitmq_url)
+
+    return pika.ConnectionParameters(
+        host=os.getenv("RABBITMQ_HOST", "localhost"),
+        connection_attempts=3,
+        retry_delay=2,
+        socket_timeout=5,
+        blocked_connection_timeout=10,
+        heartbeat=30,
+    )
+
+
+def publish_to_queue(action: str, payload: dict | list) -> None:
+    """Publish a persistent command and require a broker confirmation."""
+    connection = None
+
+    message = {
+        "action": action,
+        "data": payload,
+    }
+
     try:
-        # Establish a synchronous connection to the RabbitMQ server
         connection = pika.BlockingConnection(
-            pika.ConnectionParameters(host=RABBITMQ_HOST)
+            _connection_parameters()
         )
+
         channel = connection.channel()
+        channel.queue_declare(
+            queue=QUEUE_NAME,
+            durable=True,
+        )
+        channel.confirm_delivery()
 
-        # Idempotent queue declaration (creates it if it doesn't exist)
-        # durable=True ensures the queue survives a RabbitMQ server crash
-        channel.queue_declare(queue=QUEUE_NAME, durable=True)
-
-        # Structure the message exactly how the worker expects to read it
-        message = {
-            "action": action,
-            "data": payload
-        }
-
-        # Publish the payload
-        channel.basic_publish(
-            exchange='',
+        confirmed = channel.basic_publish(
+            exchange="",
             routing_key=QUEUE_NAME,
             body=json.dumps(message),
             properties=pika.BasicProperties(
-                delivery_mode=2,  # 2 makes the message persistent on disk
-            )
+                delivery_mode=2,
+                content_type="application/json",
+            ),
+            mandatory=True,
         )
-        
-        print(f"[*] Successfully queued '{action}' task.")
-        
-    except Exception as e:
-        # In a strict production setup, you would log this to Datadog/CloudWatch
-        print(f"[!] Failed to publish message to RabbitMQ: {e}")
-        
+
+        if confirmed is False:
+            raise RabbitMQPublishError(
+                "RabbitMQ did not confirm the published message."
+            )
+
+    except RabbitMQPublishError:
+        raise
+
+    except Exception as exc:
+        raise RabbitMQPublishError(
+            f"Failed to publish '{action}' command."
+        ) from exc
+
     finally:
-        # Always close the connection to prevent memory leaks
-        if 'connection' in locals() and connection.is_open:
+        if connection is not None and connection.is_open:
             connection.close()

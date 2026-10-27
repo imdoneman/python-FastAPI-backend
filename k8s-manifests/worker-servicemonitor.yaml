@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: db-worker-service-monitor
+  namespace: default
+  labels:
+    release: tea-house-monitoring
+spec:
+  namespaceSelector:
+    matchNames: [default]
+  selector:
+    matchLabels:
+      app: db-worker-service
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

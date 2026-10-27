@@ -1,23 +1,41 @@
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
 
-# Fetch database credentials from the environment, defaulting to localhost for local testing
+from sqlalchemy import URL, create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 POSTGRES_SERVER = os.getenv("POSTGRES_SERVER", "localhost")
+POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
 POSTGRES_DB = os.getenv("POSTGRES_DB", "tea_house")
 
-# The PostgreSQL Connection String
-SQLALCHEMY_DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_SERVER}/{POSTGRES_DB}"
+SQLALCHEMY_DATABASE_URL = URL.create(
+    drivername="postgresql+psycopg2",
+    username=POSTGRES_USER,
+    password=POSTGRES_PASSWORD,
+    host=POSTGRES_SERVER,
+    port=POSTGRES_PORT,
+    database=POSTGRES_DB,
+)
 
-# Boot up the SQLAlchemy engine
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=10,
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+)
+
 Base = declarative_base()
 
+
 def get_db():
-    """Dependency to generate database sessions on the fly."""
     db = SessionLocal()
     try:
         yield db

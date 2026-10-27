@@ -1,24 +1,30 @@
+import json
+from unittest.mock import MagicMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
-from unittest.mock import patch
+from sqlalchemy.pool import StaticPool
 
-from worker import app
-from database import get_db, Base
 import models
+import worker
+from database import Base, get_db
 
-# 1. Setup a volatile, in-memory database specifically for testing
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, 
+
+test_engine = create_engine(
+    "sqlite:///:memory:",
     connect_args={"check_same_thread": False},
-    poolclass=StaticPool
+    poolclass=StaticPool,
 )
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# 2. Dependency Override: Hijack the FastAPI route to use our test DB
+TestingSessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=test_engine,
+)
+
+
 def override_get_db():
     db = TestingSessionLocal()
     try:
@@ -26,52 +32,175 @@ def override_get_db():
     finally:
         db.close()
 
-app.dependency_overrides[get_db] = override_get_db
 
-# 3. Block the RabbitMQ consumer thread from booting during tests
-@pytest.fixture(autouse=True)
-def mock_rabbitmq_thread():
-    # Instead of patching the Thread object, we patch the function itself
-    with patch("worker.start_rabbitmq_consumer"):
-        yield
+worker.app.dependency_overrides[get_db] = override_get_db
+client = TestClient(worker.app)
 
-        
-# 4. Build and tear down the database tables for every single test
+
 @pytest.fixture(autouse=True)
 def setup_database():
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=test_engine)
     yield
-    Base.metadata.drop_all(bind=engine)
+    Base.metadata.drop_all(bind=test_engine)
 
-
-# --- THE TESTS ---
-
-client = TestClient(app)
 
 def test_worker_pulse():
     response = client.get("/pulse")
+
     assert response.status_code == 200
     assert response.json()["status"] == "worker_online"
 
+
 def test_internal_get_teas_empty():
-    """Ensure the internal route returns an empty list on a fresh database."""
     response = client.get("/internal/teas")
+
     assert response.status_code == 200
     assert response.json() == []
 
-def test_internal_get_teas_with_data():
-    """Manually insert data using SQLAlchemy, then test if the web route can fetch it."""
-    # Seed the database
-    db = TestingSessionLocal()
-    test_tea = models.TeaItem(name="Earl Grey Test", origin="UK")
-    db.add(test_tea)
-    db.commit()
-    db.close()
 
-    # Hit the API route
+def test_internal_get_teas_with_data():
+    db = TestingSessionLocal()
+    try:
+        db.add(
+            models.TeaItem(
+                name="Earl Grey Test",
+                origin="UK",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
     response = client.get("/internal/teas")
-    
+
     assert response.status_code == 200
-    data = response.json()
-    assert len(data) == 1
-    assert data[0]["name"] == "Earl Grey Test"
+    assert response.json() == [
+        {
+            "id": 1,
+            "name": "Earl Grey Test",
+            "origin": "UK",
+        }
+    ]
+
+
+def test_process_create_acknowledges_successful_message():
+    channel = MagicMock()
+    method = MagicMock(delivery_tag=123)
+
+    with patch.object(
+        worker,
+        "SessionLocal",
+        TestingSessionLocal,
+    ):
+        worker.process_task(
+            channel,
+            method,
+            None,
+            json.dumps(
+                {
+                    "action": "create",
+                    "data": {
+                        "name": "Assam",
+                        "origin": "India",
+                    },
+                }
+            ).encode(),
+        )
+
+    channel.basic_ack.assert_called_once_with(delivery_tag=123)
+    channel.basic_reject.assert_not_called()
+    channel.basic_nack.assert_not_called()
+
+    db = TestingSessionLocal()
+    try:
+        assert (
+            db.query(models.TeaItem)
+            .filter_by(name="Assam")
+            .first()
+            is not None
+        )
+    finally:
+        db.close()
+
+
+def test_process_duplicate_create_is_idempotent():
+    db = TestingSessionLocal()
+    try:
+        db.add(models.TeaItem(name="Assam", origin="India"))
+        db.commit()
+    finally:
+        db.close()
+
+    channel = MagicMock()
+    method = MagicMock(delivery_tag=124)
+
+    with patch.object(
+        worker,
+        "SessionLocal",
+        TestingSessionLocal,
+    ):
+        worker.process_task(
+            channel,
+            method,
+            None,
+            json.dumps(
+                {
+                    "action": "create",
+                    "data": {
+                        "name": "Assam",
+                        "origin": "India",
+                    },
+                }
+            ).encode(),
+        )
+
+    channel.basic_ack.assert_called_once_with(delivery_tag=124)
+
+    db = TestingSessionLocal()
+    try:
+        assert db.query(models.TeaItem).filter_by(name="Assam").count() == 1
+    finally:
+        db.close()
+
+
+def test_process_rejects_unknown_action():
+    channel = MagicMock()
+    method = MagicMock(delivery_tag=125)
+
+    worker.process_task(
+        channel,
+        method,
+        None,
+        json.dumps(
+            {"action": "unknown", "data": {}}
+        ).encode(),
+    )
+
+    channel.basic_reject.assert_called_once_with(
+        delivery_tag=125,
+        requeue=False,
+    )
+    channel.basic_ack.assert_not_called()
+
+
+def test_process_rejects_invalid_json():
+    channel = MagicMock()
+    method = MagicMock(delivery_tag=126)
+
+    worker.process_task(
+        channel,
+        method,
+        None,
+        b"{not valid JSON",
+    )
+
+    channel.basic_reject.assert_called_once_with(
+        delivery_tag=126,
+        requeue=False,
+    )
+
+
+def test_worker_metrics_endpoint():
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "tea_worker_messages_total" in response.text or "tea_worker_messages_created" in response.text

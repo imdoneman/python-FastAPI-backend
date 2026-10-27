@@ -1,14 +1,17 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: api-gateway-monitor
+  name: api-service-monitor
+  namespace: default
   labels:
-    release: prometheus # This label tells the Helm chart to pick this up
+    release: tea-house-monitoring
 spec:
+  namespaceSelector:
+    matchNames: [default]
   selector:
     matchLabels:
-      app: api-gateway
+      app: api-service
   endpoints:
-  - port: http-metrics
-    interval: 15s
-    path: /metrics
+    - port: http
+      path: /metrics
+      interval: 15s

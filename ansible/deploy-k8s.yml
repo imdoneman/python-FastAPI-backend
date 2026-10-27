@@ -1,59 +1,369 @@
 ---
-- name: Deploy Microservices to EKS Cluster
+- name: Deploy Tea House to Kubernetes
   hosts: localhost
-  vars_files:
-    - secrets.yml # <-- Load the encrypted file
   connection: local
   gather_facts: false
 
+  vars:
+    k8s_namespace: default
+    aws_region: ap-south-1
+    eks_cluster_name: tea-house-eks
+
+    manifest_dir: "{{ playbook_dir }}/../k8s-manifests"
+    rendered_dir: /tmp/tea-house-k8s-rendered
+
+    ebs_csi_role_arn: "{{ lookup('env', 'EBS_CSI_ROLE_ARN') }}"
+
+    postgres_user: "{{ lookup('env', 'POSTGRES_USER') }}"
+    postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
+    postgres_db: "{{ lookup('env', 'POSTGRES_DB') }}"
+
+    rabbitmq_user: "{{ lookup('env', 'RABBITMQ_USER') }}"
+    rabbitmq_password: "{{ lookup('env', 'RABBITMQ_PASSWORD') }}"
+    rabbitmq_url: "{{ lookup('env', 'RABBITMQ_URL') }}"
+
   tasks:
-    - name: Ensure RabbitMQ broker is deployed
+    - name: Validate required deployment variables
+      ansible.builtin.assert:
+        that:
+          - api_image is defined
+          - api_image | length > 0
+          - worker_image is defined
+          - worker_image | length > 0
+          - postgres_user | length > 0
+          - postgres_password | length > 0
+          - postgres_db | length > 0
+          - rabbitmq_user | length > 0
+          - rabbitmq_password | length > 0
+          - rabbitmq_url | length > 0
+        fail_msg: "Required image variables or deployment credentials are missing."
+      no_log: true
+
+    - name: Check AWS CLI identity
+      ansible.builtin.command:
+        argv:
+          - aws
+          - sts
+          - get-caller-identity
+      changed_when: false
+
+    - name: Check EKS cluster access
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - nodes
+          - --request-timeout=15s
+      changed_when: false
+
+    - name: Inspect EBS CSI add-on
+      ansible.builtin.command:
+        argv:
+          - aws
+          - eks
+          - describe-addon
+          - --cluster-name
+          - "{{ eks_cluster_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --addon-name
+          - aws-ebs-csi-driver
+          - --query
+          - addon.status
+          - --output
+          - text
+      register: ebs_addon_status
+      changed_when: false
+      failed_when: false
+
+    - name: Require an IAM role if EBS CSI add-on is missing
+      ansible.builtin.assert:
+        that:
+          - ebs_csi_role_arn | length > 0
+        fail_msg: >-
+          The EBS CSI add-on is not installed. Configure EBS_CSI_ROLE_ARN
+          in Jenkins with an existing IAM role trusted by the EKS EBS CSI
+          service account and with the required EBS CSI permissions.
+      when: ebs_addon_status.rc != 0
+
+    - name: Install EBS CSI add-on
+      ansible.builtin.command:
+        argv:
+          - aws
+          - eks
+          - create-addon
+          - --cluster-name
+          - "{{ eks_cluster_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --addon-name
+          - aws-ebs-csi-driver
+          - --service-account-role-arn
+          - "{{ ebs_csi_role_arn }}"
+      when: ebs_addon_status.rc != 0
+      changed_when: true
+
+    - name: Wait for EBS CSI add-on to become active
+      ansible.builtin.command:
+        argv:
+          - aws
+          - eks
+          - describe-addon
+          - --cluster-name
+          - "{{ eks_cluster_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --addon-name
+          - aws-ebs-csi-driver
+          - --query
+          - addon.status
+          - --output
+          - text
+      register: ebs_addon_ready
+      until: ebs_addon_ready.stdout | trim == "ACTIVE"
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    - name: Wait for EBS CSI controller rollout
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/ebs-csi-controller
+          - -n
+          - kube-system
+          - --timeout=300s
+      changed_when: false
+
+    - name: Create EBS gp3 StorageClass
       kubernetes.core.k8s:
         state: present
-        definition: "{{ lookup('file', playbook_dir + '/../k8s-manifests/rabbitmq.yaml') }}"
+        definition:
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: gp3
+          provisioner: ebs.csi.aws.com
+          volumeBindingMode: WaitForFirstConsumer
+          allowVolumeExpansion: true
+          reclaimPolicy: Retain
+          parameters:
+            type: gp3
+            encrypted: "true"
 
-    - name: Wait for RabbitMQ to become operational
+    - name: Check existing PostgreSQL PVC
       kubernetes.core.k8s_info:
+        api_version: v1
+        kind: PersistentVolumeClaim
+        name: postgres-data-postgres-0
+        namespace: "{{ k8s_namespace }}"
+      register: postgres_pvc
+
+    - name: Check existing PostgreSQL PVC configuration
+      ansible.builtin.assert:
+        that:
+          - >-
+            postgres_pvc.resources | length == 0 or
+            postgres_pvc.resources[0].status.phase | default('Pending') == 'Bound' or
+            postgres_pvc.resources[0].spec.storageClassName | default('') == 'gp3'
+        fail_msg: >-
+          The existing PostgreSQL PVC is Pending without a StorageClass.
+          Set storageClassName: gp3 in the PostgreSQL volumeClaimTemplates.
+          Inspect the PVC before deleting or recreating it.
+      when: postgres_pvc.resources | length > 0
+
+    - name: Create directory for rendered manifests
+      ansible.builtin.file:
+        path: "{{ rendered_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Create or update PostgreSQL credentials Secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: postgres-credentials
+            namespace: "{{ k8s_namespace }}"
+          type: Opaque
+          stringData:
+            POSTGRES_USER: "{{ postgres_user }}"
+            POSTGRES_PASSWORD: "{{ postgres_password }}"
+            POSTGRES_DB: "{{ postgres_db }}"
+      no_log: true
+
+    - name: Create or update RabbitMQ credentials Secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: rabbitmq-credentials
+            namespace: "{{ k8s_namespace }}"
+          type: Opaque
+          stringData:
+            RABBITMQ_USER: "{{ rabbitmq_user }}"
+            RABBITMQ_PASSWORD: "{{ rabbitmq_password }}"
+            RABBITMQ_URL: "{{ rabbitmq_url }}"
+      no_log: true
+
+    - name: Apply PostgreSQL manifest
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ manifest_dir }}/postgres.yaml"
+        wait: false
+
+    - name: Wait for PostgreSQL StatefulSet rollout
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - statefulset/postgres
+          - -n
+          - "{{ k8s_namespace }}"
+          - --timeout=300s
+      changed_when: false
+
+    - name: Apply RabbitMQ manifest
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ manifest_dir }}/rabbitmq.yaml"
+        wait: true
+        wait_timeout: 300
+
+    - name: Wait for RabbitMQ rollout
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
         kind: Deployment
         name: rabbitmq
-        namespace: default
-      register: rabbitmq_status
-      until: "rabbitmq_status.resources[0].status.readyReplicas | default(0) == 1"
-      retries: 10
+        namespace: "{{ k8s_namespace }}"
+      register: rabbitmq_state
+      until:
+        - rabbitmq_state.resources | length == 1
+        - rabbitmq_state.resources[0].status.readyReplicas | default(0) | int >= 1
+      retries: 30
       delay: 10
 
-    - name: Deploy FastAPI Gateway Service
+    - name: Render API manifest with versioned image
+      ansible.builtin.template:
+        src: "{{ manifest_dir }}/api-service.yaml"
+        dest: "{{ rendered_dir }}/api-service.yaml"
+        mode: "0600"
+
+    - name: Render worker manifest with versioned image
+      ansible.builtin.template:
+        src: "{{ manifest_dir }}/db-worker-service.yaml"
+        dest: "{{ rendered_dir }}/db-worker-service.yaml"
+        mode: "0600"
+
+    - name: Apply DB worker Deployment and Service
       kubernetes.core.k8s:
         state: present
-        definition: "{{ lookup('file', playbook_dir + '/../k8s-manifests/api-service.yaml') }}"
-
-    - name: Deploy DB Worker Daemon
-      kubernetes.core.k8s:
-        state: present
-        definition: "{{ lookup('file', playbook_dir + '/../k8s-manifests/db-worker-service.yaml') }}"
-    # ... (Your existing tasks for RabbitMQ and the API) ...
-
-    - name: Add Prometheus Community Helm Repository
-      kubernetes.core.helm_repository:
-        name: prometheus-community
-        repo_url: "https://prometheus-community.github.io/helm-charts"
-
-    - name: Deploy kube-prometheus-stack via Helm
-      kubernetes.core.helm:
-        name: prometheus
-        chart_ref: prometheus-community/kube-prometheus-stack
-        release_namespace: default
-        create_namespace: true
-        state: present
+        src: "{{ rendered_dir }}/db-worker-service.yaml"
         wait: true
-        # We disable some heavy default components to save EKS resources
-        values:
-          alertmanager:
-            enabled: false
-          grafana:
-            adminPassword: "{{ vault_grafana_password }}"
+        wait_timeout: 300
 
-    - name: Apply API ServiceMonitor for Prometheus scraping
+    - name: Verify DB worker rollout
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: db-worker-service
+        namespace: "{{ k8s_namespace }}"
+      register: worker_state
+      until:
+        - worker_state.resources | length == 1
+        - worker_state.resources[0].status.readyReplicas | default(0) | int >= 1
+      retries: 30
+      delay: 10
+
+    - name: Apply API Deployment and Service
       kubernetes.core.k8s:
         state: present
-        definition: "{{ lookup('file', '../k8s/api-servicemonitor.yaml') }}"
+        src: "{{ rendered_dir }}/api-service.yaml"
+        wait: true
+        wait_timeout: 300
+
+    - name: Verify API rollout
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: api-service
+        namespace: "{{ k8s_namespace }}"
+      register: api_state
+      until:
+        - api_state.resources | length == 1
+        - api_state.resources[0].status.readyReplicas | default(0) | int >= 1
+      retries: 30
+      delay: 10
+
+    - name: Ensure monitoring namespace exists
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: monitoring
+
+    - name: Add Prometheus community Helm repository
+      ansible.builtin.command:
+        argv: [helm, repo, add, prometheus-community, https://prometheus-community.github.io/helm-charts, --force-update]
+      changed_when: false
+
+    - name: Update Helm repository indexes
+      ansible.builtin.command:
+        argv: [helm, repo, update]
+      changed_when: false
+
+    - name: Install or upgrade Prometheus and Grafana
+      ansible.builtin.command:
+        argv:
+          - helm
+          - upgrade
+          - --install
+          - tea-house-monitoring
+          - prometheus-community/kube-prometheus-stack
+          - --namespace
+          - monitoring
+          - --wait
+          - --timeout
+          - 10m
+          - --set
+          - prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false
+          - --set
+          - prometheus.prometheusSpec.serviceMonitorNamespaceSelector.matchLabels.monitoring=enabled
+          - --set
+          - grafana.sidecar.dashboards.enabled=true
+      changed_when: true
+
+    - name: Label application namespace for monitoring discovery
+      kubernetes.core.k8s:
+        state: patched
+        kind: Namespace
+        name: "{{ k8s_namespace }}"
+        definition:
+          metadata:
+            labels:
+              monitoring: enabled
+
+    - name: Apply API ServiceMonitor
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ manifest_dir }}/api-servicemonitor.yaml"
+
+    - name: Apply worker ServiceMonitor
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ manifest_dir }}/worker-servicemonitor.yaml"
+
+    - name: Report deployed image versions
+      ansible.builtin.debug:
+        msg:
+          - "API image deployed: {{ api_image }}"
+          - "Worker image deployed: {{ worker_image }}"

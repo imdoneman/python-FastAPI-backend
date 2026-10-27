@@ -1,6 +1,8 @@
 fastapi==0.136.3
+httpx2==2.3.0
 pika==1.4.1
 psycopg2-binary==2.9.12
 pytest==9.0.3
 SQLAlchemy==2.0.50
 uvicorn==0.48.0
+prometheus-client==0.21.1
