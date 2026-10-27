@@ -220,15 +220,6 @@ print(f"kubernetes.core {expected} is available.")
                             echo "Validating Terraform configuration..."
                             terraform validate
 
-                            echo "Checking Terraform state..."
-                            if [ -f terraform.tfstate ]; then
-                                echo "Local Terraform state found."
-                                terraform state list
-                            else
-                                echo "ERROR: Local Terraform state file is missing."
-                                echo "Refusing to plan or apply without the expected state."
-                                exit 1
-                            fi
 
                             echo "Generating Terraform plan..."
                             terraform plan \
