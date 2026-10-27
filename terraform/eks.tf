@@ -102,9 +102,9 @@ module "eks" {
     default = {
       name           = "${var.cluster_name}-nodes"
       instance_types = ["t3.medium"]
-      min_size       = 1
-      max_size       = 2
-      desired_size   = 1
+      min_size       = 2
+      max_size       = 3
+      desired_size   = 2
 
       subnet_ids = module.vpc.private_subnets
     }
