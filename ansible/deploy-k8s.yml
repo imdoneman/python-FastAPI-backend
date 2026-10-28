@@ -310,6 +310,8 @@
           kind: Namespace
           metadata:
             name: monitoring
+            labels:
+              monitoring: enabled
 
     - name: Add Prometheus community Helm repository
       ansible.builtin.command:
@@ -321,6 +323,29 @@
         argv: [helm, repo, update]
       changed_when: false
 
+    - name: Ensure chart cache directory exists
+      ansible.builtin.file:
+        path: /tmp/tea-house-helm-charts
+        state: directory
+        mode: "0755"
+
+    - name: Download pinned monitoring chart with retries
+      ansible.builtin.command:
+        argv:
+          - helm
+          - pull
+          - prometheus-community/kube-prometheus-stack
+          - --version
+          - "92.14.1"
+          - --destination
+          - /tmp/tea-house-helm-charts
+      args:
+        creates: /tmp/tea-house-helm-charts/kube-prometheus-stack-92.14.1.tgz
+      register: chart_pull
+      retries: 4
+      delay: 15
+      until: chart_pull.rc == 0
+
     - name: Install or upgrade Prometheus and Grafana
       ansible.builtin.command:
         argv:
@@ -328,12 +353,12 @@
           - upgrade
           - --install
           - tea-house-monitoring
-          - prometheus-community/kube-prometheus-stack
+          - /tmp/tea-house-helm-charts/kube-prometheus-stack-92.14.1.tgz
           - --namespace
           - monitoring
           - --wait
           - --timeout
-          - 10m
+          - 15m
           - --set
           - prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false
           - --set
@@ -361,6 +386,47 @@
       kubernetes.core.k8s:
         state: present
         src: "{{ manifest_dir }}/worker-servicemonitor.yaml"
+
+    - name: Verify monitoring ServiceMonitors are installed
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - servicemonitor
+          - "{{ item }}"
+          - -n
+          - "{{ item_namespace }}"
+      loop:
+        - api-service-monitor
+        - db-worker-service-monitor
+        - tea-house-monitoring-prometheus-node-exporter
+      vars:
+        item_namespace: "{{ 'monitoring' if item == 'tea-house-monitoring-prometheus-node-exporter' else k8s_namespace }}"
+      changed_when: false
+
+    - name: Wait for Prometheus StatefulSet rollout
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - statefulset/prometheus-tea-house-monitoring-kube-prometheus
+          - -n
+          - monitoring
+          - --timeout=300s
+      changed_when: false
+
+    - name: Wait for Grafana Deployment rollout
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/tea-house-monitoring-grafana
+          - -n
+          - monitoring
+          - --timeout=300s
+      changed_when: false
 
     - name: Report deployed image versions
       ansible.builtin.debug:
